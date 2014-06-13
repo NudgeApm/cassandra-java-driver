@@ -32,7 +32,7 @@ import com.datastax.driver.core.exceptions.InvalidTypeException;
 /**
  * Data types supported by cassandra.
  */
-public class DataType {
+public abstract class DataType {
 
     /**
      * The CQL type name.
@@ -58,6 +58,7 @@ public class DataType {
         LIST      (32, List.class),
         SET       (34, Set.class),
         MAP       (33, Map.class),
+        UDT       (40, UDTValue.class), // TODO: we currently have no protocol id, so using a fake one to not throw off the logic below.
         CUSTOM    (0,  ByteBuffer.class);
 
         final int protocolId;
@@ -129,6 +130,7 @@ public class DataType {
          *   <tr><td>TEXT          </td><td>String</td></tr>
          *   <tr><td>TIMESTAMP     </td><td>Date</td></tr>
          *   <tr><td>UUID          </td><td>UUID</td></tr>
+         *   <tr><td>UDT           </td><td>UDTValue</td></tr>
          *   <tr><td>VARCHAR       </td><td>String</td></tr>
          *   <tr><td>VARINT        </td><td>BigInteger</td></tr>
          *   <tr><td>TIMEUUID      </td><td>UUID</td></tr>
@@ -146,36 +148,29 @@ public class DataType {
         }
     }
 
-    private final DataType.Name name;
-    private final List<DataType> typeArguments;
-    private final String customClassName;
-    private final TypeCodec<?> codec;
+    protected final DataType.Name name;
 
     private static final Map<Name, DataType> primitiveTypeMap = new EnumMap<Name, DataType>(Name.class);
     static {
         for (Name name : Name.values()) {
-            if (!name.isCollection() && name != Name.CUSTOM)
-                primitiveTypeMap.put(name, new DataType(name, Collections.<DataType>emptyList(), TypeCodec.createFor(name)));
+            if (!name.isCollection() && name != Name.CUSTOM && name != Name.UDT)
+                primitiveTypeMap.put(name, new DataType.Native(name));
         }
     }
     private static final Set<DataType> primitiveTypeSet = ImmutableSet.copyOf(primitiveTypeMap.values());
 
-    private DataType(DataType.Name name, List<DataType> typeArguments, TypeCodec<?> codec) {
-        this(name, typeArguments, null, codec);
-    }
-
-    private DataType(DataType.Name name, List<DataType> typeArguments, String customClassName, TypeCodec<?> codec) {
+    protected DataType(DataType.Name name) {
         this.name = name;
-        this.typeArguments = typeArguments;
-        this.customClassName = customClassName;
-        this.codec = codec;
     }
 
     static DataType decode(ChannelBuffer buffer) {
         Name name = Name.fromProtocolId(buffer.readUnsignedShort());
         switch (name) {
             case CUSTOM:
-                return custom(CBUtil.readString(buffer));
+                String className = CBUtil.readString(buffer);
+                return CassandraTypeParser.isUserType(className)
+                     ? CassandraTypeParser.parseOne(className)
+                     : custom(className);
             case LIST:
                 return list(decode(buffer));
             case SET:
@@ -189,10 +184,7 @@ public class DataType {
         }
     }
 
-    @SuppressWarnings("unchecked")
-    TypeCodec<Object> codec() {
-        return (TypeCodec<Object>)codec;
-    }
+    abstract TypeCodec<Object> codec(int protocolVersion);
 
     /**
      * Returns the ASCII type.
@@ -348,7 +340,7 @@ public class DataType {
         // TODO: for list, sets and maps, we could cache them (may or may not be worth it, but since we
         // don't allow nesting of collections, even pregenerating all the lists/sets like we do for
         // primitives wouldn't be very costly)
-        return new DataType(Name.LIST, ImmutableList.of(elementType), TypeCodec.listOf(elementType));
+        return new DataType.Collection(Name.LIST, ImmutableList.of(elementType));
     }
 
     /**
@@ -358,7 +350,7 @@ public class DataType {
      * @return the type of sets of {@code elementType} elements.
      */
     public static DataType set(DataType elementType) {
-        return new DataType(Name.SET, ImmutableList.of(elementType), TypeCodec.setOf(elementType));
+        return new DataType.Collection(Name.SET, ImmutableList.of(elementType));
     }
 
     /**
@@ -369,7 +361,7 @@ public class DataType {
      * @return the type of map of {@code keyType} to {@code valueType} elements.
      */
     public static DataType map(DataType keyType, DataType valueType) {
-        return new DataType(Name.MAP, ImmutableList.of(keyType, valueType), TypeCodec.mapOf(keyType, valueType));
+        return new DataType.Collection(Name.MAP, ImmutableList.of(keyType, valueType));
     }
 
     /**
@@ -389,7 +381,12 @@ public class DataType {
     public static DataType custom(String typeClassName) {
         if (typeClassName == null)
             throw new NullPointerException();
-        return new DataType(Name.CUSTOM, Collections.<DataType>emptyList(), typeClassName, TypeCodec.createFor(Name.CUSTOM));
+        return new DataType.Custom(Name.CUSTOM, typeClassName);
+    }
+
+    // TODO: do we want to make this public somehow?
+    static DataType userType(UDTDefinition definition) {
+        return new UserType(definition);
     }
 
     /**
@@ -419,7 +416,17 @@ public class DataType {
      * @return an immutable list containing the type arguments of this type.
      */
     public List<DataType> getTypeArguments() {
-        return typeArguments;
+        return Collections.<DataType>emptyList();
+    }
+
+    /**
+     * Returns their definition for user defined types (UDT).
+     *
+     * @return the definition of a user defined type or {@code null} for any other
+     * type.
+     */
+    public UDTDefinition getUDTDefinition() {
+        return null;
     }
 
     /**
@@ -429,7 +436,7 @@ public class DataType {
      * {@code null} for any other type.
      */
     public String getCustomTypeClassName() {
-        return customClassName;
+        return null;
     }
 
     /**
@@ -446,16 +453,7 @@ public class DataType {
      * representation for this type. Please note that values for custom types
      * can never be parsed and will always return this exception.
      */
-    public ByteBuffer parse(String value) {
-        if (name == Name.CUSTOM)
-            throw new InvalidTypeException(String.format("Cannot parse '%s' as value of custom type of class '%s' "
-                                                       + "(values for custom type cannot be parse and must be inputted as bytes directly)", value, customClassName));
-
-        if (name.isCollection())
-            throw new InvalidTypeException(String.format("Cannot parse value as %s, parsing collections is not currently supported", name));
-
-        return codec().serialize(codec.parse(value));
-    }
+    public abstract ByteBuffer parse(String value);
 
     /**
      * Returns whether this type is a collection one, i.e. a list, set or map type.
@@ -509,7 +507,7 @@ public class DataType {
             throw new InvalidTypeException(String.format("Invalid value for CQL type %s, expecting %s but %s provided", toString(), expectedClass, providedClass));
 
         try {
-            return codec().serialize(value);
+            return codec(ProtocolOptions.NEWEST_SUPPORTED_PROTOCOL_VERSION).serialize(value);
         } catch (ClassCastException e) {
             // With collections, the element type has not been checked, so it can throw
             throw new InvalidTypeException("Invalid type for collection element: " + e.getMessage());
@@ -537,7 +535,7 @@ public class DataType {
      * encoding of an object of this {@code DataType}.
      */
     public Object deserialize(ByteBuffer bytes) {
-        return codec().deserialize(bytes);
+        return codec(ProtocolOptions.NEWEST_SUPPORTED_PROTOCOL_VERSION).deserialize(bytes);
     }
 
     /**
@@ -575,32 +573,184 @@ public class DataType {
         }
     }
 
-    @Override
-    public final int hashCode() {
-        return Arrays.hashCode(new Object[]{ name, typeArguments, customClassName });
+    private static class Native extends DataType {
+        private Native(DataType.Name name) {
+            super(name);
+        }
+
+        @Override
+        TypeCodec<Object> codec(int protocolVersion) {
+            return TypeCodec.createFor(name);
+        }
+
+        @Override
+        public ByteBuffer parse(String value) {
+            TypeCodec<Object> codec = codec(0);;
+            return codec.serialize(codec.parse(value));
+        }
+
+        @Override
+        public final int hashCode() {
+            return name.hashCode();
+        }
+
+        @Override
+        public final boolean equals(Object o) {
+            if(!(o instanceof DataType.Native))
+                return false;
+
+            return name == ((DataType.Native)o).name;
+        }
+
+        @Override
+        public String toString() {
+            return name.toString();
+        }
     }
 
-    @Override
-    public final boolean equals(Object o) {
-        if(!(o instanceof DataType))
-            return false;
+    private static class Collection extends DataType {
 
-        DataType d = (DataType)o;
-        return name == d.name && typeArguments.equals(d.typeArguments) && Objects.equal(customClassName, d.customClassName);
-    }
+        private final List<DataType> typeArguments;
 
-    @Override
-    public String toString() {
-        switch (name) {
-            case LIST:
-            case SET:
-                return String.format("%s<%s>", name, typeArguments.get(0));
-            case MAP:
+        private Collection(DataType.Name name, List<DataType> typeArguments) {
+            super(name);
+            this.typeArguments = typeArguments;
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        TypeCodec<Object> codec(int protocolVersion) {
+            switch (name)
+            {
+                case LIST: return (TypeCodec)TypeCodec.listOf(typeArguments.get(0), protocolVersion);
+                case SET: return (TypeCodec)TypeCodec.setOf(typeArguments.get(0), protocolVersion);
+                case MAP: return (TypeCodec)TypeCodec.mapOf(typeArguments.get(0), typeArguments.get(1), protocolVersion);
+            }
+            throw new AssertionError();
+        }
+
+        @Override
+        public List<DataType> getTypeArguments() {
+            return typeArguments;
+        }
+
+        @Override
+        public ByteBuffer parse(String value) {
+            throw new InvalidTypeException(String.format("Cannot parse value as %s, parsing collections is not currently supported", name));
+        }
+
+        @Override
+        public final int hashCode() {
+            return Arrays.hashCode(new Object[]{ name, typeArguments });
+        }
+
+        @Override
+        public final boolean equals(Object o) {
+            if(!(o instanceof DataType.Collection))
+                return false;
+
+            DataType.Collection d = (DataType.Collection)o;
+            return name == d.name && typeArguments.equals(d.typeArguments);
+        }
+
+        @Override
+        public String toString() {
+            if (name == Name.MAP)
                 return String.format("%s<%s, %s>", name, typeArguments.get(0), typeArguments.get(1));
-            case CUSTOM:
-                return String.format("'%s'", customClassName);
-            default:
-                return name.toString();
+            else
+                return String.format("%s<%s>", name, typeArguments.get(0));
+        }
+    }
+
+    private static class UserType extends DataType {
+
+        private final UDTDefinition definition;
+
+        private UserType(UDTDefinition definition) {
+            super(DataType.Name.UDT);
+            this.definition = definition;
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        TypeCodec<Object> codec(int protocolVersion) {
+            return (TypeCodec)TypeCodec.udtOf(definition);
+        }
+
+        @Override
+        public UDTDefinition getUDTDefinition() {
+            return definition;
+        }
+
+        @Override
+        public ByteBuffer parse(String value) {
+            // TODO: we actuall need that, because UDT can be in the partition key and so BuiltStatement needs that
+            throw new InvalidTypeException(String.format("Cannot parse value as %s, parsing user types is not currently supported", name));
+        }
+
+        @Override
+        public final int hashCode() {
+            return Arrays.hashCode(new Object[]{ name, definition });
+        }
+
+        @Override
+        public final boolean equals(Object o) {
+            if(!(o instanceof DataType.UserType))
+                return false;
+
+            DataType.UserType d = (DataType.UserType)o;
+            return name == d.name && definition.equals(d.definition);
+        }
+
+        @Override
+        public String toString() {
+            return Metadata.escapeId(definition.getKeyspace()) + '.' + Metadata.escapeId(definition.getName());
+        }
+    }
+
+    private static class Custom extends DataType {
+
+        private final String customClassName;
+
+        private Custom(DataType.Name name, String className) {
+            super(name);
+            this.customClassName = className;
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        TypeCodec<Object> codec(int protocolVersion) {
+            return (TypeCodec)TypeCodec.BytesCodec.instance;
+        }
+
+        @Override
+        public String getCustomTypeClassName() {
+            return customClassName;
+        }
+
+        @Override
+        public ByteBuffer parse(String value) {
+            throw new InvalidTypeException(String.format("Cannot parse '%s' as value of custom type of class '%s' "
+                        + "(values for custom type cannot be parse and must be inputted as bytes directly)", value, customClassName));
+        }
+
+        @Override
+        public final int hashCode() {
+            return Arrays.hashCode(new Object[]{ name, customClassName });
+        }
+
+        @Override
+        public final boolean equals(Object o) {
+            if(!(o instanceof DataType.Custom))
+                return false;
+
+            DataType.Custom d = (DataType.Custom)o;
+            return name == d.name && Objects.equal(customClassName, d.customClassName);
+        }
+
+        @Override
+        public String toString() {
+            return String.format("'%s'", customClassName);
         }
     }
 }
