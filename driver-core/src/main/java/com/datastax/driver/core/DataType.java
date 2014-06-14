@@ -384,8 +384,12 @@ public abstract class DataType {
         return new DataType.Custom(Name.CUSTOM, typeClassName);
     }
 
-    // TODO: do we want to make this public somehow?
-    static DataType userType(UDTDefinition definition) {
+	/**
+	 * Returns a user type.
+	 * @param definition UDT definition.
+	 * @return The data type for the UDT of the given definition.
+	 */
+    public static DataType userType(UDTDefinition definition) {
         return new UserType(definition);
     }
 
