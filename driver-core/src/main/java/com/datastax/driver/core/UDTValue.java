@@ -15,8 +15,6 @@
  */
 package com.datastax.driver.core;
 
-import java.util.Arrays;
-
 /**
  * A value for a User Defined Type.
  */
@@ -39,7 +37,7 @@ public class UDTValue extends AbstractData<UDTValue> {
     }
 
     protected int[] getAllIndexesOf(String name) {
-        int[] indexes = definition.byName.get(name);
+        int[] indexes = definition.byName.get(Metadata.handleId(name));
         if (indexes == null)
             throw new IllegalArgumentException(name + " is not a field defined in this UDT");
         return indexes;
@@ -73,19 +71,16 @@ public class UDTValue extends AbstractData<UDTValue> {
 
     @Override
     public String toString() {
-        // TODO: we should make the output CQL-compatible, i.e. we should
-        // quote string etc... But to do properly we sould move some of the
-        // formatting code from the queryBuilder to DataType (say some DataType.format(Object))
-        // method.
         StringBuilder sb = new StringBuilder();
         sb.append("{");
         for (int i = 0; i < values.length; i++) {
             if (i > 0)
-                sb.append(",");
+                sb.append(", ");
 
             sb.append(getName(i));
             sb.append(":");
-            sb.append(values[i] == null ? "null" : getType(i).deserialize(values[i]));
+            DataType dt = getType(i);
+            sb.append(values[i] == null ? "null" : dt.format(dt.deserialize(values[i], 3)));
         }
         sb.append("}");
         return sb.toString();

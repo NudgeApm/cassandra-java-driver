@@ -91,6 +91,8 @@ abstract class TypeCodec<T> {
     private TypeCodec() {}
 
     public abstract T parse(String value);
+    public abstract String format(T value);
+
     public abstract ByteBuffer serialize(T value);
     public abstract T deserialize(ByteBuffer bytes);
 
@@ -154,7 +156,7 @@ abstract class TypeCodec<T> {
             if (value instanceof BigDecimal)
                 return DataType.decimal();
             if (value instanceof BigInteger)
-                return DataType.decimal();
+                return DataType.varint();
             return null;
         }
 
@@ -199,6 +201,10 @@ abstract class TypeCodec<T> {
             return keyType == null || valueType == null
                  ? null
                  : DataType.map(keyType, valueType);
+        }
+
+        if (value instanceof UDTValue) {
+            return DataType.userType(((UDTValue) value).getDefinition());
         }
 
         return null;
@@ -309,7 +315,47 @@ abstract class TypeCodec<T> {
 
         @Override
         public String parse(String value) {
-            return value;
+            if (value.charAt(0) != '\'' || value.charAt(value.length() - 1) != '\'')
+                throw new InvalidTypeException("text values must enclosed by a single quotes");
+
+            return value.substring(1, value.length() - 1).replace("''", "'");
+        }
+
+        @Override
+        public String format(String value) {
+            return '\'' + replace(value, '\'', "''") + '\'';
+        }
+
+        // Simple method to replace a single character. String.replace is a bit too
+        // inefficient (see JAVA-67)
+        static String replace(String text, char search, String replacement) {
+            if (text == null || text.isEmpty())
+                return text;
+
+            int nbMatch = 0;
+            int start = -1;
+            do {
+                start = text.indexOf(search, start+1);
+                if (start != -1)
+                    ++nbMatch;
+            } while (start != -1);
+
+            if (nbMatch == 0)
+                return text;
+
+            int newLength = text.length() + nbMatch * (replacement.length() - 1);
+            char[] result = new char[newLength];
+            int newIdx = 0;
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (c == search) {
+                    for (int r = 0; r < replacement.length(); r++)
+                        result[newIdx++] = replacement.charAt(r);
+                } else {
+                    result[newIdx++] = c;
+                }
+            }
+            return new String(result);
         }
 
         @Override
@@ -349,6 +395,11 @@ abstract class TypeCodec<T> {
         }
 
         @Override
+        public String format(Long value) {
+            return Long.toString(value);
+        }
+
+        @Override
         public ByteBuffer serialize(Long value) {
             return serializeNoBoxing(value);
         }
@@ -384,6 +435,11 @@ abstract class TypeCodec<T> {
         }
 
         @Override
+        public String format(ByteBuffer value) {
+            return Bytes.toHexString(value);
+        }
+
+        @Override
         public ByteBuffer serialize(ByteBuffer value) {
             return value.duplicate();
         }
@@ -410,6 +466,11 @@ abstract class TypeCodec<T> {
                 return true;
 
             throw new InvalidTypeException(String.format("Cannot parse boolean value from \"%s\"", value));
+        }
+
+        @Override
+        public String format(Boolean value) {
+            return value ? "true" : "false";
         }
 
         @Override
@@ -447,6 +508,11 @@ abstract class TypeCodec<T> {
             } catch (NumberFormatException e) {
                 throw new InvalidTypeException(String.format("Cannot parse decimal value from \"%s\"", value));
             }
+        }
+
+        @Override
+        public String format(BigDecimal value) {
+            return value.toString();
         }
 
         @Override
@@ -493,6 +559,11 @@ abstract class TypeCodec<T> {
         }
 
         @Override
+        public String format(Double value) {
+            return Double.toString(value);
+        }
+
+        @Override
         public ByteBuffer serialize(Double value) {
             return serializeNoBoxing(value);
         }
@@ -529,6 +600,11 @@ abstract class TypeCodec<T> {
             } catch (NumberFormatException e) {
                 throw new InvalidTypeException(String.format("Cannot parse 32-bits float value from \"%s\"", value));
             }
+        }
+
+        @Override
+        public String format(Float value) {
+            return Float.toString(value);
         }
 
         @Override
@@ -571,6 +647,11 @@ abstract class TypeCodec<T> {
         }
 
         @Override
+        public String format(InetAddress value) {
+            return value.getHostAddress();
+        }
+
+        @Override
         public ByteBuffer serialize(InetAddress value) {
             return ByteBuffer.wrap(value.getAddress());
         }
@@ -598,6 +679,11 @@ abstract class TypeCodec<T> {
             } catch (NumberFormatException e) {
                 throw new InvalidTypeException(String.format("Cannot parse 32-bits int value from \"%s\"", value));
             }
+        }
+
+        @Override
+        public String format(Integer value) {
+            return Integer.toString(value);
         }
 
         @Override
@@ -691,6 +777,11 @@ abstract class TypeCodec<T> {
         }
 
         @Override
+        public String format(Date value) {
+            return Long.toString(value.getTime());
+        }
+
+        @Override
         public ByteBuffer serialize(Date value) {
             return LongCodec.instance.serializeNoBoxing(value.getTime());
         }
@@ -714,6 +805,11 @@ abstract class TypeCodec<T> {
             } catch (IllegalArgumentException e) {
                 throw new InvalidTypeException(String.format("Cannot parse UUID value from \"%s\"", value));
             }
+        }
+
+        @Override
+        public String format(UUID value) {
+            return value.toString();
         }
 
         @Override
@@ -769,6 +865,11 @@ abstract class TypeCodec<T> {
         }
 
         @Override
+        public String format(BigInteger value) {
+            return value.toString();
+        }
+
+        @Override
         public ByteBuffer serialize(BigInteger value) {
             return ByteBuffer.wrap(value.toByteArray());
         }
@@ -791,7 +892,49 @@ abstract class TypeCodec<T> {
 
         @Override
         public List<T> parse(String value) {
-            throw new UnsupportedOperationException();
+            int idx = ParseUtils.skipSpaces(value, 0);
+            if (value.charAt(idx++) != '[')
+                throw new InvalidTypeException(String.format("cannot parse list value from \"%s\", at character %d expecting '[' but got '%c'", value, idx, value.charAt(idx)));
+
+            idx = ParseUtils.skipSpaces(value, idx);
+
+            if (value.charAt(idx) == ']')
+                return Collections.<T>emptyList();
+
+            List<T> l = new ArrayList<T>();
+            while (idx < value.length()) {
+                int n;
+                try {
+                    n = ParseUtils.skipCQLValue(value, idx);
+                } catch (IllegalArgumentException e) {
+                    throw new InvalidTypeException(String.format("Cannot parse list value from \"%s\", invalid CQL value at character %d", value, idx), e);
+                }
+
+                l.add(eltCodec.parse(value.substring(idx, n)));
+                idx = n;
+
+                idx = ParseUtils.skipSpaces(value, idx);
+                if (value.charAt(idx) == ']')
+                    return l;
+                if (value.charAt(idx++) != ',')
+                    throw new InvalidTypeException(String.format("Cannot parse list value from \"%s\", at character %d expecting ',' but got '%c'", value, idx, value.charAt(idx)));
+
+                idx = ParseUtils.skipSpaces(value, idx);
+            }
+            throw new InvalidTypeException(String.format("Malformed list value \"%s\", missing closing ']'", value));
+        }
+
+        @Override
+        public String format(List<T> value) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("[");
+            for (int i = 0; i < value.size(); i++) {
+                if (i != 0)
+                    sb.append(", ");
+                sb.append(eltCodec.format(value.get(i)));
+            }
+            sb.append("]");
+            return sb.toString();
         }
 
         @Override
@@ -832,7 +975,50 @@ abstract class TypeCodec<T> {
 
         @Override
         public Set<T> parse(String value) {
-            throw new UnsupportedOperationException();
+            int idx = ParseUtils.skipSpaces(value, 0);
+            if (value.charAt(idx++) != '{')
+                throw new InvalidTypeException(String.format("cannot parse set value from \"%s\", at character %d expecting '{' but got '%c'", value, idx, value.charAt(idx)));
+
+            idx = ParseUtils.skipSpaces(value, idx);
+
+            if (value.charAt(idx) == '}')
+                return Collections.<T>emptySet();
+
+            Set<T> s = new HashSet<T>();
+            while (idx < value.length()) {
+                int n;
+                try {
+                    n = ParseUtils.skipCQLValue(value, idx);
+                } catch (IllegalArgumentException e) {
+                    throw new InvalidTypeException(String.format("Cannot parse set value from \"%s\", invalid CQL value at character %d", value, idx), e);
+                }
+
+                s.add(eltCodec.parse(value.substring(idx, n)));
+                idx = n;
+
+                idx = ParseUtils.skipSpaces(value, idx);
+                if (value.charAt(idx) == '}')
+                    return s;
+                if (value.charAt(idx++) != ',')
+                    throw new InvalidTypeException(String.format("Cannot parse set value from \"%s\", at character %d expecting ',' but got '%c'", value, idx, value.charAt(idx)));
+
+                idx = ParseUtils.skipSpaces(value, idx);
+            }
+            throw new InvalidTypeException(String.format("Malformed set value \"%s\", missing closing '}'", value));
+        }
+
+        @Override
+        public String format(Set<T> value) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{");
+            int i = 0;
+            for (T v : value) {
+                if (i++ != 0)
+                    sb.append(", ");
+                sb.append(eltCodec.format(v));
+            }
+            sb.append("}");
+            return sb.toString();
         }
 
         @Override
@@ -875,7 +1061,69 @@ abstract class TypeCodec<T> {
 
         @Override
         public Map<K, V> parse(String value) {
-            throw new UnsupportedOperationException();
+            int idx = ParseUtils.skipSpaces(value, 0);
+            if (value.charAt(idx++) != '{')
+                throw new InvalidTypeException(String.format("cannot parse map value from \"%s\", at character %d expecting '{' but got '%c'", value, idx, value.charAt(idx)));
+
+            idx = ParseUtils.skipSpaces(value, idx);
+
+            if (value.charAt(idx) == '}')
+                return Collections.<K, V>emptyMap();
+
+            Map<K, V> m = new HashMap<K, V>();
+            while (idx < value.length()) {
+                int n;
+                try {
+                    n = ParseUtils.skipCQLValue(value, idx);
+                } catch (IllegalArgumentException e) {
+                    throw new InvalidTypeException(String.format("Cannot parse map value from \"%s\", invalid CQL value at character %d", value, idx), e);
+                }
+
+                K k = keyCodec.parse(value.substring(idx, n));
+                idx = n;
+
+                idx = ParseUtils.skipSpaces(value, idx);
+                if (value.charAt(idx++) != ':')
+                    throw new InvalidTypeException(String.format("Cannot parse map value from \"%s\", at character %d expecting ':' but got '%c'", value, idx, value.charAt(idx)));
+                idx = ParseUtils.skipSpaces(value, idx);
+
+                try {
+                    n = ParseUtils.skipCQLValue(value, idx);
+                } catch (IllegalArgumentException e) {
+                    throw new InvalidTypeException(String.format("Cannot parse map value from \"%s\", invalid CQL value at character %d", value, idx), e);
+                }
+
+                V v = valueCodec.parse(value.substring(idx, n));
+                idx = n;
+
+                m.put(k, v);
+
+                idx = ParseUtils.skipSpaces(value, idx);
+                if (value.charAt(idx) == '}')
+                    return m;
+                if (value.charAt(idx++) != ',')
+                    throw new InvalidTypeException(String.format("Cannot parse map value from \"%s\", at character %d expecting ',' but got '%c'", value, idx, value.charAt(idx)));
+
+                idx = ParseUtils.skipSpaces(value, idx);
+
+            }
+            throw new InvalidTypeException(String.format("Malformed map value \"%s\", missing closing '}'", value));
+        }
+
+        @Override
+        public String format(Map<K, V> value) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{");
+            int i = 0;
+            for (Map.Entry<K, V> e : value.entrySet()) {
+                if (i++ != 0)
+                    sb.append(", ");
+                sb.append(keyCodec.format(e.getKey()));
+                sb.append(":");
+                sb.append(valueCodec.format(e.getValue()));
+            }
+            sb.append("}");
+            return sb.toString();
         }
 
         @Override
@@ -915,10 +1163,17 @@ abstract class TypeCodec<T> {
             this.definition = definition;
         }
 
+        @Override
         public UDTValue parse(String value) {
-            throw new UnsupportedOperationException();
+            return definition.parseValue(value);
         }
 
+        @Override
+        public String format(UDTValue value) {
+            return value.toString();
+        }
+
+        @Override
         public ByteBuffer serialize(UDTValue value) {
             int size = 0;
             List<ByteBuffer> vs = new ArrayList<ByteBuffer>(definition.size());
@@ -940,6 +1195,7 @@ abstract class TypeCodec<T> {
             return (ByteBuffer)result.flip();
         }
 
+        @Override
         public UDTValue deserialize(ByteBuffer bytes) {
             ByteBuffer input = bytes.duplicate();
             UDTValue value = definition.newValue();

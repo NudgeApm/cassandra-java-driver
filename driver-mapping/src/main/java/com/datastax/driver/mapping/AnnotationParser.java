@@ -3,9 +3,18 @@ package com.datastax.driver.mapping;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.Type;
 import java.util.*;
 
 import com.datastax.driver.core.ConsistencyLevel;
+
+import com.datastax.driver.mapping.MethodMapper.ParamMapper;
+import com.datastax.driver.mapping.MethodMapper.UDTListParamMapper;
+import com.datastax.driver.mapping.MethodMapper.UDTMapParamMapper;
+import com.datastax.driver.mapping.MethodMapper.UDTParamMapper;
+import com.datastax.driver.mapping.MethodMapper.UDTSetParamMapper;
+import com.datastax.driver.mapping.MethodMapper.EnumParamMapper;
 import com.datastax.driver.mapping.annotations.*;
 
 /**
@@ -21,7 +30,7 @@ class AnnotationParser {
 
     private AnnotationParser() {}
 
-    public static <T> EntityMapper<T> parseEntity(Class<T> entityClass, EntityMapper.Factory factory) {
+    public static <T> EntityMapper<T> parseEntity(Class<T> entityClass, EntityMapper.Factory factory, MappingManager mappingManager) {
         Table table = entityClass.getAnnotation(Table.class);
         if (table == null)
             throw new IllegalArgumentException("@Table annotation was not found on class " + entityClass.getName());
@@ -61,18 +70,49 @@ class AnnotationParser {
         validateOrder(pks, "@PartitionKey");
         validateOrder(ccs, "@ClusteringColumn");
 
-        mapper.addColumns(convert(pks, factory, mapper.entityClass),
-                          convert(ccs, factory, mapper.entityClass),
-                          convert(rgs, factory, mapper.entityClass));
+        mapper.addColumns(convert(pks, factory, mapper.entityClass, mappingManager),
+                          convert(ccs, factory, mapper.entityClass, mappingManager),
+                          convert(rgs, factory, mapper.entityClass, mappingManager));
         return mapper;
     }
 
-    private static <T> List<ColumnMapper<T>> convert(List<Field> fields, EntityMapper.Factory factory, Class<T> klass) {
+    public static <T> EntityMapper<T> parseUDT(Class<T> udtClass, EntityMapper.Factory factory, MappingManager mappingManager) {
+        UDT udt = udtClass.getAnnotation(UDT.class);
+        if (udt == null)
+            throw new IllegalArgumentException(String.format("@%s annotation was not found on class %s", UDT.class.getSimpleName(), udtClass.getName()));
+
+        String ksName = udt.caseSensitiveKeyspace() ? udt.keyspace() : udt.keyspace().toLowerCase();
+        String udtName = udt.caseSensitiveType() ? udt.name() : udt.name().toLowerCase();
+
+        EntityMapper<T> mapper = factory.create(udtClass, ksName, udtName, null, null);
+
+        List<Field> columns = new ArrayList<Field>();
+
+        for (Field field : udtClass.getDeclaredFields()) {
+            if (field.getAnnotation(Transient.class) != null)
+                continue;
+
+            switch (kind(field)) {
+                case PARTITION_KEY:
+                    throw new IllegalArgumentException("Annotation @PartitionKey is not allowed in a class annotated by @UDT");
+                case CLUSTERING_COLUMN:
+                    throw new IllegalArgumentException("Annotation @ClusteringColumn is not allowed in a class annotated by @UDT");
+                default:
+                    columns.add(field);
+                    break;
+            }
+        }
+
+        mapper.addColumns(convert(columns, factory, udtClass, mappingManager));
+        return mapper;
+    }
+
+    private static <T> List<ColumnMapper<T>> convert(List<Field> fields, EntityMapper.Factory factory, Class<T> klass, MappingManager mappingManager) {
         List<ColumnMapper<T>> mappers = new ArrayList<ColumnMapper<T>>(fields.size());
         for (int i = 0; i < fields.size(); i++) {
             Field field = fields.get(i);
             int pos = position(field);
-            mappers.add(factory.createColumnMapper(klass, field, pos < 0 ? i : pos));
+            mappers.add(factory.createColumnMapper(klass, field, pos < 0 ? i : pos, mappingManager));
         }
         return mappers;
     }
@@ -120,13 +160,19 @@ class AnnotationParser {
 
     public static String columnName(Field field) {
         Column column = field.getAnnotation(Column.class);
-        if (column == null)
-            return field.getName();
+        if (column != null) {
+            return column.caseSensitive() ? column.name() : column.name().toLowerCase();
+        }
 
-        return column.caseSensitive() ? column.name() : column.name().toLowerCase();
+        com.datastax.driver.mapping.annotations.Field udtField = field.getAnnotation(com.datastax.driver.mapping.annotations.Field.class);
+        if (udtField != null) {
+            return udtField.caseSensitive() ? udtField.name() : udtField.name().toLowerCase();
+        }
+
+        return field.getName();
     }
 
-    public static <T> AccessorMapper<T> parseAccessor(Class<T> accClass, AccessorMapper.Factory factory) {
+    public static <T> AccessorMapper<T> parseAccessor(Class<T> accClass, AccessorMapper.Factory factory, MappingManager mappingManager) {
         if (!accClass.isInterface())
             throw new IllegalArgumentException("@Accessor annotation is only allowed on interfaces");
 
@@ -143,16 +189,23 @@ class AnnotationParser {
             String queryString = query.value();
 
             Annotation[][] paramAnnotations = m.getParameterAnnotations();
-            String[] paramNames = new String[paramAnnotations.length];
-            outer:
-            for (int i = 0; i < paramNames.length; i++) {
+            Type[] paramTypes = m.getGenericParameterTypes();
+            ParamMapper[] paramMappers = new ParamMapper[paramAnnotations.length];
+            Boolean hasParamAnnotation = null;
+            for (int i = 0; i < paramMappers.length; i++) {
+                String paramName = null;
                 for (Annotation a : paramAnnotations[i]) {
                     if (a.annotationType().equals(Param.class)) {
-                       paramNames[i] = ((Param)a).value();
-                       continue outer;
+                        paramName = ((Param) a).value();
+                        break;
                     }
                 }
-                paramNames[i] = "arg" + i;
+                if (hasParamAnnotation == null)
+                    hasParamAnnotation = (paramName != null);
+                if (hasParamAnnotation != (paramName != null))
+                    throw new IllegalArgumentException(String.format("For method '%s', either all or none of the paramaters of a method must have a @Param annotation", m.getName()));
+
+                paramMappers[i] = newParamMapper(accClass.getName(), m.getName(), i, paramName, paramTypes[i], paramAnnotations[i], mappingManager);
             }
 
             ConsistencyLevel cl = null;
@@ -166,9 +219,55 @@ class AnnotationParser {
                 tracing = options.tracing();
             }
 
-            methods.add(new MethodMapper(m, queryString, paramNames, cl, fetchSize, tracing));
+            methods.add(new MethodMapper(m, queryString, paramMappers, cl, fetchSize, tracing));
         }
 
         return factory.create(accClass, methods);
+    }
+
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    private static ParamMapper newParamMapper(String className, String methodName, int idx, String paramName, Type paramType, Annotation[] paramAnnotations, MappingManager mappingManager) {
+        if (paramType instanceof Class) {
+            Class<?> paramClass = (Class<?>) paramType;
+            if (paramClass.isAnnotationPresent(UDT.class)) {
+                UDTMapper<?> udtMapper = mappingManager.getUDTMapper(paramClass);
+                return new UDTParamMapper(paramName, idx, udtMapper);
+            } else if (paramClass.isEnum()) {
+                EnumType enumType = EnumType.STRING;
+                for (Annotation annotation : paramAnnotations) {
+                    if (annotation instanceof Enumerated) {
+                        enumType = ((Enumerated) annotation).value();
+                    }
+                }
+                return new EnumParamMapper(paramName, idx, enumType);
+            }
+            return new ParamMapper(paramName, idx);
+        } if (paramType instanceof ParameterizedType) {
+            ParameterizedType pt = (ParameterizedType) paramType;
+            Type raw = pt.getRawType();
+            if (!(raw instanceof Class))
+                throw new IllegalArgumentException(String.format("Cannot map class %s for parameter %s of %s.%s", paramType, paramName, className, methodName));
+            Class<?> klass = (Class<?>)raw;
+            Class<?> firstTypeParam = ReflectionUtils.getParam(pt, 0, paramName);
+            if (List.class.isAssignableFrom(klass) && firstTypeParam.isAnnotationPresent(UDT.class)) {
+                UDTMapper<?> valueMapper = mappingManager.getUDTMapper(firstTypeParam);
+                return new UDTListParamMapper(paramName, idx, valueMapper);
+            }
+            if (Set.class.isAssignableFrom(klass) && firstTypeParam.isAnnotationPresent(UDT.class)) {
+                UDTMapper<?> valueMapper = mappingManager.getUDTMapper(firstTypeParam);
+                return new UDTSetParamMapper(paramName, idx, valueMapper);
+            }
+            if (Map.class.isAssignableFrom(klass)) {
+                Class<?> secondTypeParam = ReflectionUtils.getParam(pt, 1, paramName);
+                UDTMapper<?> keyMapper = firstTypeParam.isAnnotationPresent(UDT.class) ? mappingManager.getUDTMapper(firstTypeParam) : null;
+                UDTMapper<?> valueMapper = secondTypeParam.isAnnotationPresent(UDT.class) ? mappingManager.getUDTMapper(secondTypeParam) : null;
+                if (keyMapper != null || valueMapper != null) {
+                    return new UDTMapParamMapper(paramName, idx, keyMapper, valueMapper);
+                }
+            }
+            return new ParamMapper(paramName, idx);
+        } else {
+            throw new IllegalArgumentException(String.format("Cannot map class %s for parameter %s of %s.%s", paramType, paramName, className, methodName));
+        }
     }
 }

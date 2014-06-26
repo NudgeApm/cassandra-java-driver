@@ -384,11 +384,12 @@ public abstract class DataType {
         return new DataType.Custom(Name.CUSTOM, typeClassName);
     }
 
-	/**
-	 * Returns a user type.
-	 * @param definition UDT definition.
-	 * @return The data type for the UDT of the given definition.
-	 */
+    /**
+     * Returns a User Defined Type (UDT).
+     *
+     * @param definition the description of the type's keyspace, name and fields.
+     * @return the UDT defined by {@code definition}.
+     */
     public static DataType userType(UDTDefinition definition) {
         return new UserType(definition);
     }
@@ -444,20 +445,36 @@ public abstract class DataType {
     }
 
     /**
-     * Parses a string value for the type this object represent, returning its
-     * Cassandra binary representation.
-     * <p>
-     * Please note that currently, parsing collections is not supported and will
-     * throw an {@code InvalidTypeException}.
+     * Parses a string CQL value for the type this object represent, returning its
+     * value as a Java object.
      *
      * @param value the value to parse.
-     * @return the binary representation of {@code value}.
+     * @return a java object representing {@code value}. If {@code value == null}, then
+     * {@code null} is returned.
      *
-     * @throws InvalidTypeException if {@code value} is not a valid string
+     * @throws InvalidTypeException if {@code value} is not a valid CQL string
      * representation for this type. Please note that values for custom types
      * can never be parsed and will always return this exception.
      */
-    public abstract ByteBuffer parse(String value);
+    public Object parse(String value) {
+        // We don't care about the protocol version for parsing
+        return value == null ? null : codec(-1).parse(value);
+    }
+
+    /**
+     * Format a Java object as an equivalent CQL value.
+     *
+     * @param value the value to format.
+     * @return a string corresponding to the CQL representation of {@code value}.
+     *
+     * @throws InvalidTypeException if {@code value} does not correspond to
+     * a CQL value (known by the driver). Please note that for custom types this
+     * method will always return this exception.
+     */
+    public String format(Object value) {
+        // We don't care about the protocol version for formatting
+        return value == null ? null : codec(-1).format(value);
+    }
 
     /**
      * Returns whether this type is a collection one, i.e. a list, set or map type.
@@ -493,25 +510,29 @@ public abstract class DataType {
     }
 
     /**
-     * Serialize a value of this type to bytes.
+     * Serialize a value of this type to bytes, with the given protocol version.
      * <p>
      * The actual format of the resulting bytes will correspond to the
-     * Cassandra encoding for this type.
+     * Cassandra encoding for this type (for the requested protocol version).
      *
      * @param value the value to serialize.
+     * @param protocolVersion the protocol version to use when serializing
+     * {@code bytes}. In most cases, the proper value to provide for this argument
+     * is the value returned by {@link ProtocolOptions#getProtocolVersion} (which
+     * is the protocol version in use by the driver).
      * @return the value serialized, or {@code null} if {@code value} is null.
      *
      * @throws InvalidTypeException if {@code value} is not a valid object
      * for this {@code DataType}.
      */
-    public ByteBuffer serialize(Object value) {
+    public ByteBuffer serialize(Object value, int protocolVersion) {
         Class<?> providedClass = value.getClass();
         Class<?> expectedClass = asJavaClass();
         if (!expectedClass.isAssignableFrom(providedClass))
             throw new InvalidTypeException(String.format("Invalid value for CQL type %s, expecting %s but %s provided", toString(), expectedClass, providedClass));
 
         try {
-            return codec(ProtocolOptions.NEWEST_SUPPORTED_PROTOCOL_VERSION).serialize(value);
+            return codec(protocolVersion).serialize(value);
         } catch (ClassCastException e) {
             // With collections, the element type has not been checked, so it can throw
             throw new InvalidTypeException("Invalid type for collection element: " + e.getMessage());
@@ -519,12 +540,13 @@ public abstract class DataType {
     }
 
     /**
-     * Deserialize a value of this type from the provided bytes.
-     * <p>
-     * The format of {@code bytes} must correspond to the Cassandra
-     * encoding for this type.
+     * Deserialize a value of this type from the provided bytes using the given protocol version.
      *
      * @param bytes bytes holding the value to deserialize.
+     * @param protocolVersion the protocol version to use when deserializing
+     * {@code bytes}. In most cases, the proper value to provide for this argument
+     * is the value returned by {@link ProtocolOptions#getProtocolVersion} (which
+     * is the protocol version in use by the driver).
      * @return the deserialized value (of class {@code this.asJavaClass()}).
      * Will return {@code null} if either {@code bytes} is {@code null} or if
      * {@code bytes.remaining() == 0} and this type has no value corresponding
@@ -533,13 +555,13 @@ public abstract class DataType {
      * accept empty byte buffer as valid value of those type, and so we avoid
      * throwing an exception in that case. It is however highly discouraged to
      * store empty byte buffers for types for which it doesn't make sense, so
-     * this implementation can generally be ignored).
+     * this detail can generally be ignored).
      *
      * @throws InvalidTypeException if {@code bytes} is not a valid
      * encoding of an object of this {@code DataType}.
      */
-    public Object deserialize(ByteBuffer bytes) {
-        return codec(ProtocolOptions.NEWEST_SUPPORTED_PROTOCOL_VERSION).deserialize(bytes);
+    public Object deserialize(ByteBuffer bytes, int protocolVersion) {
+        return codec(protocolVersion).deserialize(bytes);
     }
 
     /**
@@ -553,13 +575,17 @@ public abstract class DataType {
      * the {@link #serialize} method instead as it is going to be faster.
      *
      * @param value the value to serialize.
+     * @param protocolVersion the protocol version to use when deserializing
+     * {@code bytes}. In most cases, the proper value to provide for this argument
+     * is the value returned by {@link ProtocolOptions#getProtocolVersion} (which
+     * is the protocol version in use by the driver).
      * @return the value serialized, or {@code null} if {@code value} is null.
      *
      * @throws IllegalArgumentException if {@code value} is not of a type
      * corresponding to a CQL3 type, i.e. is not a Class that could be returned
      * by {@link DataType#asJavaClass}.
      */
-    public static ByteBuffer serializeValue(Object value) {
+    public static ByteBuffer serializeValue(Object value, int protocolVersion) {
         if (value == null)
             return null;
 
@@ -568,7 +594,7 @@ public abstract class DataType {
             throw new IllegalArgumentException(String.format("Value of type %s does not correspond to any CQL3 type", value.getClass()));
 
         try {
-            return dt.serialize(value);
+            return dt.serialize(value, protocolVersion);
         } catch (InvalidTypeException e) {
             // In theory we couldn't get that if getDataTypeFor does his job correctly,
             // but there is no point in sending an exception that the user won't expect if we're
@@ -585,12 +611,6 @@ public abstract class DataType {
         @Override
         TypeCodec<Object> codec(int protocolVersion) {
             return TypeCodec.createFor(name);
-        }
-
-        @Override
-        public ByteBuffer parse(String value) {
-            TypeCodec<Object> codec = codec(0);;
-            return codec.serialize(codec.parse(value));
         }
 
         @Override
@@ -639,11 +659,6 @@ public abstract class DataType {
         }
 
         @Override
-        public ByteBuffer parse(String value) {
-            throw new InvalidTypeException(String.format("Cannot parse value as %s, parsing collections is not currently supported", name));
-        }
-
-        @Override
         public final int hashCode() {
             return Arrays.hashCode(new Object[]{ name, typeArguments });
         }
@@ -687,12 +702,6 @@ public abstract class DataType {
         }
 
         @Override
-        public ByteBuffer parse(String value) {
-            // TODO: we actuall need that, because UDT can be in the partition key and so BuiltStatement needs that
-            throw new InvalidTypeException(String.format("Cannot parse value as %s, parsing user types is not currently supported", name));
-        }
-
-        @Override
         public final int hashCode() {
             return Arrays.hashCode(new Object[]{ name, definition });
         }
@@ -733,9 +742,13 @@ public abstract class DataType {
         }
 
         @Override
-        public ByteBuffer parse(String value) {
-            throw new InvalidTypeException(String.format("Cannot parse '%s' as value of custom type of class '%s' "
-                        + "(values for custom type cannot be parse and must be inputted as bytes directly)", value, customClassName));
+        public Object parse(String value) {
+            throw new InvalidTypeException("Cannot parse values of custom types");
+        }
+
+        @Override
+        public String format(Object value) {
+            throw new InvalidTypeException("Cannot format values of custom types");
         }
 
         @Override

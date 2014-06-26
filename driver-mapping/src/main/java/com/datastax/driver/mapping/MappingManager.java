@@ -17,6 +17,7 @@ public class MappingManager {
     private final Session session;
 
     private volatile Map<Class<?>, Mapper<?>> mappers = Collections.<Class<?>, Mapper<?>>emptyMap();
+    private volatile Map<Class<?>, UDTMapper<?>> udtMappers = Collections.<Class<?>, UDTMapper<?>>emptyMap();
     private volatile Map<Class<?>, Object> accessors = Collections.<Class<?>, Object>emptyMap();
 
     /**
@@ -47,8 +48,8 @@ public class MappingManager {
      * Creates a {@code Mapper} for the provided class (that must be annotated by a
      * {@link Table} annotation).
      * <p>
-     * The {@code MappingManager} only ever keep one Mapper for each class, and so calling this
-     * method multiple time on the same class will always return the same object.
+     * The {@code MappingManager} only ever keeps one Mapper for each class, and so calling this
+     * method multiple times on the same class will always return the same object.
      *
      * @param <T> the type of the class to map.
      * @param klass the (annotated) class for which to return the mapper.
@@ -59,7 +60,25 @@ public class MappingManager {
     }
 
     /**
-     * Creates an accessor object based on teh provided interface (that must be annotated by
+     * Creates a {@code UDTMapper} for the provided class (that must be
+     * annotated by a {@link UDT} annotation).
+     *
+     * <p>
+     * The {@code MappingManager} only ever keeps one {@code UDTMapper} for each
+     * class, and so calling this method multiple times on the same class will
+     * always return the same object.
+     * </p>
+     *
+     * @param <T> the type of the class to map.
+     * @param klass the (annotated) class for which to return the mapper.
+     * @return the {@code UDTMapper} object for class {@code klass}.
+     */
+    public <T> UDTMapper<T> udtMapper(Class<T> klass) {
+        return getUDTMapper(klass);
+    }
+
+    /**
+     * Creates an accessor object based on the provided interface (that must be annotated by
      * a {@link Accessor} annotation).
      * <p>
      * The {@code MappingManager} only ever keep one Accessor for each class, and so calling this
@@ -80,11 +99,29 @@ public class MappingManager {
             synchronized (mappers) {
                 mapper = (Mapper<T>)mappers.get(klass);
                 if (mapper == null) {
-                    EntityMapper<T> entityMapper = AnnotationParser.parseEntity(klass, ReflectionMapper.factory());
+                    EntityMapper<T> entityMapper = AnnotationParser.parseEntity(klass, ReflectionMapper.factory(), this);
                     mapper = new Mapper<T>(this, klass, entityMapper);
                     Map<Class<?>, Mapper<?>> newMappers = new HashMap<Class<?>, Mapper<?>>(mappers);
                     newMappers.put(klass, mapper);
                     mappers = newMappers;
+                }
+            }
+        }
+        return mapper;
+    }
+
+    @SuppressWarnings("unchecked")
+    <T> UDTMapper<T> getUDTMapper(Class<T> klass) {
+        UDTMapper<T> mapper = (UDTMapper<T>)udtMappers.get(klass);
+        if (mapper == null) {
+            synchronized (udtMappers) {
+                mapper = (UDTMapper<T>)udtMappers.get(klass);
+                if (mapper == null) {
+                    EntityMapper<T> entityMapper = AnnotationParser.parseUDT(klass, ReflectionMapper.factory(), this);
+                    mapper = new UDTMapper<T>(entityMapper, session);
+                    Map<Class<?>, UDTMapper<?>> newMappers = new HashMap<Class<?>, UDTMapper<?>>(udtMappers);
+                    newMappers.put(klass, mapper);
+                    udtMappers = newMappers;
                 }
             }
         }
@@ -98,7 +135,7 @@ public class MappingManager {
             synchronized (accessors) {
                 accessor = (T)accessors.get(klass);
                 if (accessor == null) {
-                    AccessorMapper<T> mapper = AnnotationParser.parseAccessor(klass, AccessorReflectionMapper.factory());
+                    AccessorMapper<T> mapper = AnnotationParser.parseAccessor(klass, AccessorReflectionMapper.factory(), this);
                     mapper.prepare(this);
                     accessor = mapper.createProxy();
                     Map<Class<?>, Object> newAccessors = new HashMap<Class<?>, Object>(accessors);

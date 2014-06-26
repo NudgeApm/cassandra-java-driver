@@ -52,6 +52,10 @@ abstract class EntityMapper<T> {
         clusteringColumns.addAll(ccs);
         allColumns.addAll(ccs);
 
+        addColumns(rgs);
+    }
+
+    public void addColumns(List<ColumnMapper<T>> rgs) {
         regularColumns.addAll(rgs);
         allColumns.addAll(rgs);
     }
@@ -64,6 +68,6 @@ abstract class EntityMapper<T> {
 
     interface Factory {
         public <T> EntityMapper<T> create(Class<T> entityClass, String keyspace, String table, ConsistencyLevel writeConsistency, ConsistencyLevel readConsistency);
-        public <T> ColumnMapper<T> createColumnMapper(Class<T> entityClass, Field field, int position);
+        public <T> ColumnMapper<T> createColumnMapper(Class<T> componentClass, Field field, int position, MappingManager mappingManager);
     }
 }

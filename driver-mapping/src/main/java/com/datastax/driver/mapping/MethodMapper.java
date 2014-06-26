@@ -3,9 +3,13 @@ package com.datastax.driver.mapping;
 import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+
 import com.datastax.driver.core.*;
 
 // TODO: we probably should make that an abstract class and move some bit in a "ReflexionMethodMapper"
@@ -14,7 +18,7 @@ class MethodMapper {
 
     public final Method method;
     public final String queryString;
-    public final String[] paramNames;
+    public final ParamMapper[] paramMappers;
 
     private final ConsistencyLevel consistency;
     private final int fetchSize;
@@ -28,10 +32,10 @@ class MethodMapper {
     private boolean mapOne;
     private boolean async;
 
-    MethodMapper(Method method, String queryString, String[] paramNames, ConsistencyLevel consistency, int fetchSize, boolean enableTracing) {
+    MethodMapper(Method method, String queryString, ParamMapper[] paramMappers, ConsistencyLevel consistency, int fetchSize, boolean enableTracing) {
         this.method = method;
         this.queryString = queryString;
-        this.paramNames = paramNames;
+        this.paramMappers = paramMappers;
         this.consistency = consistency;
         this.fetchSize = fetchSize;
         this.tracing = enableTracing;
@@ -48,7 +52,6 @@ class MethodMapper {
                                                               method.getName(), method.getParameterTypes().length, ps.getVariables().size()));
 
         // TODO: we should also validate the types of the parameters...
-
 
         Class<?> returnType = method.getReturnType();
         if (Void.class.isAssignableFrom(returnType) || ResultSet.class.isAssignableFrom(returnType))
@@ -105,12 +108,9 @@ class MethodMapper {
 
         BoundStatement bs = statement.bind();
 
+        int protocolVersion = session.getCluster().getConfiguration().getProtocolOptions().getProtocolVersion();
         for (int i = 0; i < args.length; i++) {
-            Object arg = args[i];
-            if (arg == null)
-                continue;
-
-            bs.setBytesUnsafe(paramNames[i], DataType.serializeValue(args[i]));
+            paramMappers[i].setValue(bs, args[i], protocolVersion);
         }
 
         if (consistency != null)
@@ -138,6 +138,118 @@ class MethodMapper {
 
             Result<?> result = returnMapper.map(rs);
             return mapOne ? result.one() : result;
+        }
+    }
+
+    static class ParamMapper {
+        // We'll only set one of the other. If paramName is null, then paramIdx is used.
+        private final String paramName;
+        private final int paramIdx;
+
+        public ParamMapper(String paramName, int paramIdx) {
+            this.paramName = paramName;
+            this.paramIdx = paramIdx;
+        }
+
+        void setValue(BoundStatement boundStatement, Object arg, int protocolVersion) {
+            if (arg != null) {
+                if (paramName == null)
+                    boundStatement.setBytesUnsafe(paramIdx, DataType.serializeValue(arg, protocolVersion));
+                else
+                    boundStatement.setBytesUnsafe(paramName, DataType.serializeValue(arg, protocolVersion));
+            }
+        }
+    }
+
+    static class UDTParamMapper<V> extends ParamMapper {
+        private final UDTMapper<V> udtMapper;
+
+        UDTParamMapper(String paramName, int paramIdx, UDTMapper<V> udtMapper) {
+            super(paramName, paramIdx);
+            this.udtMapper = udtMapper;
+        }
+
+        @Override
+        void setValue(BoundStatement boundStatement, Object arg, int protocolVersion) {
+            @SuppressWarnings("unchecked")
+            V entity = (V) arg;
+            super.setValue(boundStatement, udtMapper.toUDTValue(entity), protocolVersion);
+        }
+    }
+
+    static class UDTListParamMapper<V> extends ParamMapper {
+        private final UDTMapper<V> valueMapper;
+
+        UDTListParamMapper(String paramName, int paramIdx, UDTMapper<V> valueMapper) {
+            super(paramName, paramIdx);
+            this.valueMapper = valueMapper;
+        }
+
+        @Override
+        void setValue(BoundStatement boundStatement, Object arg, int protocolVersion) {
+            @SuppressWarnings("unchecked")
+            List<V> entities = (List<V>) arg;
+            super.setValue(boundStatement, valueMapper.toUDTValues(entities), protocolVersion);
+        }
+    }
+
+    static class UDTSetParamMapper<V> extends ParamMapper {
+        private final UDTMapper<V> valueMapper;
+
+        UDTSetParamMapper(String paramName, int paramIdx, UDTMapper<V> valueMapper) {
+            super(paramName, paramIdx);
+            this.valueMapper = valueMapper;
+        }
+
+        @Override
+        void setValue(BoundStatement boundStatement, Object arg, int protocolVersion) {
+            @SuppressWarnings("unchecked")
+            Set<V> entities = (Set<V>) arg;
+            super.setValue(boundStatement, valueMapper.toUDTValues(entities), protocolVersion);
+        }
+    }
+
+    static class UDTMapParamMapper<K, V> extends ParamMapper {
+        private final UDTMapper<K> keyMapper;
+        private final UDTMapper<V> valueMapper;
+
+        UDTMapParamMapper(String paramName, int paramIdx, UDTMapper<K> keyMapper, UDTMapper<V> valueMapper) {
+            super(paramName, paramIdx);
+            this.keyMapper = keyMapper;
+            this.valueMapper = valueMapper;
+        }
+
+        @Override
+        void setValue(BoundStatement boundStatement, Object arg, int protocolVersion) {
+            @SuppressWarnings("unchecked")
+            Map<K, V> entities = (Map<K, V>) arg;
+            super.setValue(boundStatement, UDTMapper.toUDTValues(entities, keyMapper, valueMapper), protocolVersion);
+        }
+    }
+
+    static class EnumParamMapper extends ParamMapper {
+
+        private final EnumType enumType;
+
+        public EnumParamMapper(String paramName, int paramIdx, EnumType enumType) {
+            super(paramName, paramIdx);
+            this.enumType = enumType;
+        }
+
+        @Override
+        void setValue(BoundStatement boundStatement, Object arg, int protocolVersion) {
+            super.setValue(boundStatement, convert(arg), protocolVersion);
+        }
+
+        @SuppressWarnings("rawtypes")
+        private Object convert(Object arg) {
+            switch (enumType) {
+            case STRING:
+                return arg.toString();
+            case ORDINAL:
+                return ((Enum) arg).ordinal();
+            }
+            throw new AssertionError();
         }
     }
 }
