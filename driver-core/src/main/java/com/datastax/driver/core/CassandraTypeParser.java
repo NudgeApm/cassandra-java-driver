@@ -43,6 +43,7 @@ class CassandraTypeParser {
     private static final String SET_TYPE = "org.apache.cassandra.db.marshal.SetType";
     private static final String MAP_TYPE = "org.apache.cassandra.db.marshal.MapType";
     private static final String UDT_TYPE = "org.apache.cassandra.db.marshal.UserType";
+    private static final String TUPLE_TYPE = "org.apache.cassandra.db.marshal.TupleType";
 
     private static ImmutableMap<String, DataType> cassTypeToDataType =
         new ImmutableMap.Builder<String, DataType>()
@@ -97,10 +98,19 @@ class CassandraTypeParser {
             String typeName = TypeCodec.StringCodec.utf8Instance.deserialize(Bytes.fromHexString("0x" + parser.readOne()));
             parser.skipBlankAndComma();
             Map<String, String> rawFields = parser.getNameAndTypeParameters();
-            List<UDTDefinition.Field> fields = new ArrayList<UDTDefinition.Field>(rawFields.size());
+            List<UserType.Field> fields = new ArrayList<UserType.Field>(rawFields.size());
             for (Map.Entry<String, String> entry : rawFields.entrySet())
-                fields.add(new UDTDefinition.Field(entry.getKey(), parseOne(entry.getValue())));
-            return DataType.userType(new UDTDefinition(keyspace, typeName, fields));
+                fields.add(new UserType.Field(entry.getKey(), parseOne(entry.getValue())));
+            return new UserType(keyspace, typeName, fields);
+        }
+
+        if (isTupleType(next)) {
+            List<String> rawTypes = parser.getTypeParameters();
+            List<DataType> types = new ArrayList<DataType>(rawTypes.size());
+            for (String rawType : rawTypes) {
+                types.add(parseOne(rawType));
+            }
+            return new TupleType(types);
         }
 
         DataType type = cassTypeToDataType.get(next);
@@ -113,6 +123,10 @@ class CassandraTypeParser {
 
     public static boolean isUserType(String className) {
         return className.startsWith(UDT_TYPE);
+    }
+
+    public static boolean isTupleType(String className) {
+        return className.startsWith(TUPLE_TYPE);
     }
 
     private static boolean isComposite(String className) {

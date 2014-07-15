@@ -15,50 +15,53 @@
  */
 package com.datastax.driver.core;
 
+import java.util.Arrays;
+import java.util.List;
+
 /**
- * A value for a User Defined Type.
+ * A value for a Tuple.
  */
-public class UDTValue extends AbstractData<UDTValue> {
+public class TupleValue extends AbstractAddressableByIndexData<TupleValue> {
 
-    private final UserType definition;
+    private final TupleType type;
 
-    UDTValue(UserType definition) {
-        // All things in a UDT are encoded with the protocol v3
-        super(3, definition.size());
-        this.definition = definition;
+    /**
+     * Builds a new value for a tuple.
+     *
+     * @param types the types of the tuple's components.
+     */
+    TupleValue(TupleType type) {
+        // All things in a tuple are encoded with the protocol v3
+        super(3, type.getComponentTypes().size());
+        this.type = type;
     }
 
     protected DataType getType(int i) {
-        return definition.byIdx[i].getType();
+        return type.getComponentTypes().get(i);
     }
 
+    @Override
     protected String getName(int i) {
-        return definition.byIdx[i].getName();
-    }
-
-    protected int[] getAllIndexesOf(String name) {
-        int[] indexes = definition.byName.get(Metadata.handleId(name));
-        if (indexes == null)
-            throw new IllegalArgumentException(name + " is not a field defined in this UDT");
-        return indexes;
+        // This is used for error messages
+        return "component " + i;
     }
 
     /**
-     * The UDT this is a value of.
+     * The tuple type this is a value of.
      *
-     * @return the UDT this is a value of.
+     * @return The tuple type this is a value of.
      */
-    public UserType getType() {
-        return definition;
+    public TupleType getType() {
+        return type;
     }
 
     @Override
     public boolean equals(Object o) {
-        if (!(o instanceof UDTValue))
+        if (!(o instanceof TupleValue))
             return false;
 
-        UDTValue that = (UDTValue)o;
-        if (!definition.equals(that.definition))
+        TupleValue that = (TupleValue)o;
+        if (!type.equals(that.type))
             return false;
 
         return super.equals(o);
@@ -72,17 +75,15 @@ public class UDTValue extends AbstractData<UDTValue> {
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder();
-        sb.append("{");
+        sb.append("(");
         for (int i = 0; i < values.length; i++) {
             if (i > 0)
                 sb.append(", ");
 
-            sb.append(getName(i));
-            sb.append(":");
             DataType dt = getType(i);
             sb.append(values[i] == null ? "null" : dt.format(dt.deserialize(values[i], 3)));
         }
-        sb.append("}");
+        sb.append(")");
         return sb.toString();
     }
 }

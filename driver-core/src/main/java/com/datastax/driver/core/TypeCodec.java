@@ -21,11 +21,7 @@ import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
-import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
-import java.nio.charset.CharsetDecoder;
-import java.nio.charset.CharsetEncoder;
 import java.text.ParseException;
 import java.text.ParsePosition;
 import java.text.SimpleDateFormat;
@@ -39,8 +35,8 @@ abstract class TypeCodec<T> {
 
     // Somehow those don't seem to get properly initialized if they're not here. The reason
     // escape me right now so let's just leave it here for now
-    public static final StringCodec utf8Instance = new StringCodec(true);
-    public static final StringCodec asciiInstance = new StringCodec(false);
+    public static final StringCodec utf8Instance = new StringCodec(Charset.forName("UTF-8"));
+    public static final StringCodec asciiInstance = new StringCodec(Charset.forName("US-ASCII"));
 
     private static final Map<DataType.Name, TypeCodec<?>> primitiveCodecs = new EnumMap<DataType.Name, TypeCodec<?>>(DataType.Name.class);
     static {
@@ -124,12 +120,16 @@ abstract class TypeCodec<T> {
         return codec != null ? (TypeCodec)codec : new MapCodec<Object, Object>(keys.codec(protocolVersion), values.codec(protocolVersion), protocolVersion);
     }
 
-    static UDTCodec udtOf(UDTDefinition definition) {
+    static UDTCodec udtOf(UserType definition) {
         return new UDTCodec(definition);
     }
 
+    static TupleCodec tupleOf(TupleType type) {
+        return new TupleCodec(type);
+    }
+
     /* This is ugly, but not sure how we can do much better/faster
-     * Returns if it's doesn't correspond to a known type.
+     * Returns null if it's doesn't correspond to a known type.
      *
      * Also, note that this only a dataType that is fit for the value,
      * but for instance, for a UUID, this will return DataType.uuid() but
@@ -204,7 +204,11 @@ abstract class TypeCodec<T> {
         }
 
         if (value instanceof UDTValue) {
-            return DataType.userType(((UDTValue) value).getDefinition());
+            return ((UDTValue) value).getType();
+        }
+
+        if (value instanceof TupleValue) {
+            return ((TupleValue) value).getType();
         }
 
         return null;
@@ -278,39 +282,10 @@ abstract class TypeCodec<T> {
 
     static class StringCodec extends TypeCodec<String> {
 
-        private static final Charset utf8Charset = Charset.forName("UTF-8");
-        private static final Charset asciiCharset = Charset.forName("US-ASCII");
+        private final Charset charset;
 
-        // We don't want to recreate the decoders/encoders every time and they're not threadSafe.
-        private static final ThreadLocal<CharsetDecoder> utf8Decoders = new ThreadLocal<CharsetDecoder>() {
-            @Override
-            protected CharsetDecoder initialValue() {
-                return utf8Charset.newDecoder();
-            }
-        };
-        private static final ThreadLocal<CharsetDecoder> asciiDecoders = new ThreadLocal<CharsetDecoder>() {
-            @Override
-            protected CharsetDecoder initialValue() {
-                return asciiCharset.newDecoder();
-            }
-        };
-        private static final ThreadLocal<CharsetEncoder> utf8Encoders = new ThreadLocal<CharsetEncoder>() {
-            @Override
-            protected CharsetEncoder initialValue() {
-                return utf8Charset.newEncoder();
-            }
-        };
-        private static final ThreadLocal<CharsetEncoder> asciiEncoders = new ThreadLocal<CharsetEncoder>() {
-            @Override
-            protected CharsetEncoder initialValue() {
-                return asciiCharset.newEncoder();
-            }
-        };
-
-        private final boolean isUTF8;
-
-        private StringCodec(boolean isUTF8) {
-            this.isUTF8 = isUTF8;
+        private StringCodec(Charset charset) {
+            this.charset = charset;
         }
 
         @Override
@@ -360,22 +335,12 @@ abstract class TypeCodec<T> {
 
         @Override
         public ByteBuffer serialize(String value) {
-            try {
-                CharsetEncoder encoder = isUTF8 ? utf8Encoders.get() : asciiEncoders.get();
-                return encoder.encode(CharBuffer.wrap(value));
-            } catch (CharacterCodingException e) {
-                throw new InvalidTypeException("Invalid " + (isUTF8 ? "UTF-8" : "ASCII") + " string");
-            }
+            return ByteBuffer.wrap(value.getBytes(charset));
         }
 
         @Override
         public String deserialize(ByteBuffer bytes) {
-            try {
-                CharsetDecoder decoder = isUTF8 ? utf8Decoders.get() : asciiDecoders.get();
-                return decoder.decode(bytes.duplicate()).toString();
-            } catch (CharacterCodingException e) {
-                throw new InvalidTypeException("Invalid " + (isUTF8 ? "UTF-8" : "ASCII") + " bytes");
-            }
+            return new String(Bytes.getArray(bytes), charset);
         }
     }
 
@@ -1129,7 +1094,6 @@ abstract class TypeCodec<T> {
         @Override
         public ByteBuffer serialize(Map<K, V> value) {
             List<ByteBuffer> bbs = new ArrayList<ByteBuffer>(2 * value.size());
-            int size = 0;
             for (Map.Entry<K, V> entry : value.entrySet()) {
                 bbs.add(keyCodec.serialize(entry.getKey()));
                 bbs.add(valueCodec.serialize(entry.getValue()));
@@ -1157,9 +1121,9 @@ abstract class TypeCodec<T> {
 
     static class UDTCodec extends TypeCodec<UDTValue> {
 
-        private final UDTDefinition definition;
+        private final UserType definition;
 
-        public UDTCodec(UDTDefinition definition) {
+        public UDTCodec(UserType definition) {
             this.definition = definition;
         }
 
@@ -1176,15 +1140,11 @@ abstract class TypeCodec<T> {
         @Override
         public ByteBuffer serialize(UDTValue value) {
             int size = 0;
-            List<ByteBuffer> vs = new ArrayList<ByteBuffer>(definition.size());
-            for (int i = 0; i < definition.size(); i++) {
-                ByteBuffer v = value.values[i];
-                vs.add(v);
+            for (ByteBuffer v : value.values)
                 size += 4 + (v == null ? 0 : v.remaining());
-            }
 
             ByteBuffer result = ByteBuffer.allocate(size);
-            for (ByteBuffer bb : vs) {
+            for (ByteBuffer bb : value.values) {
                 if (bb == null) {
                     result.putInt(-1);
                 } else {
@@ -1201,7 +1161,91 @@ abstract class TypeCodec<T> {
             UDTValue value = definition.newValue();
 
             int i = 0;
-            while (input.hasRemaining() && i < definition.size()) {
+            while (input.hasRemaining() && i < value.values.length) {
+                int n = input.getInt();
+                value.values[i++] = n < 0 ? null : readBytes(input, n);
+            }
+            return value;
+        }
+    }
+
+    static class TupleCodec extends TypeCodec<TupleValue> {
+
+        private final TupleType type;
+
+        public TupleCodec(TupleType type) {
+            this.type = type;
+        }
+
+        @Override
+        public TupleValue parse(String value) {
+            TupleValue v = type.newValue();
+
+            int idx = ParseUtils.skipSpaces(value, 0);
+            if (value.charAt(idx++) != '(')
+                throw new InvalidTypeException(String.format("Cannot parse tuple value from \"%s\", at character %d expecting '(' but got '%c'", value, idx, value.charAt(idx)));
+
+            idx = ParseUtils.skipSpaces(value, idx);
+
+            if (value.charAt(idx) == ')')
+                return v;
+
+            int i = 0;
+            while (idx < value.length()) {
+                int n;
+                try {
+                    n = ParseUtils.skipCQLValue(value, idx);
+                } catch (IllegalArgumentException e) {
+                    throw new InvalidTypeException(String.format("Cannot parse tuple value from \"%s\", invalid CQL value at character %d", value, idx), e);
+                }
+
+                DataType dt = type.getComponentTypes().get(i);
+                v.setBytesUnsafe(i, dt.serialize(dt.parse(value.substring(idx, n)), 3));
+                idx = n;
+                i += 1;
+
+                idx = ParseUtils.skipSpaces(value, idx);
+                if (value.charAt(idx) == ')')
+                    return v;
+                if (value.charAt(idx) != ',')
+                    throw new InvalidTypeException(String.format("Cannot parse tuple value from \"%s\", at character %d expecting ',' but got '%c'", value, idx, value.charAt(idx)));
+                ++idx; // skip ','
+
+                idx = ParseUtils.skipSpaces(value, idx);
+            }
+            throw new InvalidTypeException(String.format("Malformed tuple value \"%s\", missing closing ')'", value));
+        }
+
+        @Override
+        public String format(TupleValue value) {
+            return value.toString();
+        }
+
+        @Override
+        public ByteBuffer serialize(TupleValue value) {
+            int size = 0;
+            for (ByteBuffer v : value.values)
+                size += 4 + (v == null ? 0 : v.remaining());
+
+            ByteBuffer result = ByteBuffer.allocate(size);
+            for (ByteBuffer bb : value.values) {
+                if (bb == null) {
+                    result.putInt(-1);
+                } else {
+                    result.putInt(bb.remaining());
+                    result.put(bb.duplicate());
+                }
+            }
+            return (ByteBuffer)result.flip();
+        }
+
+        @Override
+        public TupleValue deserialize(ByteBuffer bytes) {
+            ByteBuffer input = bytes.duplicate();
+            TupleValue value = type.newValue();
+
+            int i = 0;
+            while (input.hasRemaining() && i < value.values.length) {
                 int n = input.getInt();
                 value.values[i++] = n < 0 ? null : readBytes(input, n);
             }

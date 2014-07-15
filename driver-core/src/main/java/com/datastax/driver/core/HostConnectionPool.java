@@ -244,12 +244,9 @@ class HostConnectionPool {
 
         int inFlight = connection.inFlight.decrementAndGet();
 
-        if (connection.isDefunct()) {
-            if (manager.cluster.manager.signalConnectionFailure(host, connection.lastException(), false))
-                closeAsync();
-            else
-                replace(connection);
-        } else {
+        // If the connection is defunct, we have already replaced it or closed
+        // the pool as part of marking it.
+        if (!connection.isDefunct()) {
 
             if (trash.contains(connection) && inFlight == 0) {
                 if (trash.remove(connection))
@@ -328,20 +325,16 @@ class HostConnectionPool {
         } catch (ConnectionException e) {
             open.decrementAndGet();
             logger.debug("Connection error to {} while creating additional connection", host);
-            if (manager.cluster.manager.signalConnectionFailure(host, e, false))
-                closeAsync();
             return false;
         } catch (AuthenticationException e) {
             // This shouldn't really happen in theory
             open.decrementAndGet();
             logger.error("Authentication error while creating additional connection (error is: {})", e.getMessage());
-            closeAsync();
             return false;
         } catch (UnsupportedProtocolVersionException e) {
             // This shouldn't happen since we shouldn't have been able to connect in the first place
             open.decrementAndGet();
             logger.error("UnsupportedProtocolVersionException error while creating additional connection (error is: {})", e.getMessage());
-            closeAsync();
             return false;
         }
     }
@@ -359,7 +352,7 @@ class HostConnectionPool {
         manager.blockingExecutor().submit(newConnectionTask);
     }
 
-    private void replace(final Connection connection) {
+    void replace(final Connection connection) {
         connections.remove(connection);
         connection.closeAsync();
         manager.blockingExecutor().submit(new Runnable() {
@@ -383,8 +376,6 @@ class HostConnectionPool {
         CloseFuture future = closeFuture.get();
         if (future != null)
             return future;
-
-        logger.debug("Shutting down pool");
 
         // Wake up all threads that waits
         signalAllAvailableConnection();

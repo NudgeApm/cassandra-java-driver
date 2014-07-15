@@ -1,6 +1,18 @@
 CHANGELOG
 =========
 
+2.0.4:
+------
+
+- [improvement] Better handling of dead connections (JAVA-204)
+- [bug] Fix potential NPE in ControlConnection (JAVA-373)
+- [bug] Throws NPE when passed null for a contact point (JAVA-291)
+- [bug] Avoid LoadBalancingPolicy onDown+onUp at startup (JAVA-315)
+- [bug] Avoid classloader leak in Tomcat (JAVA-343)
+- [bug] Avoid deadlock in onAdd/onUp (JAVA-387)
+- [bug] Make metadata parsing more lenient (JAVA-377, JAVA-391)
+
+
 2.0.3:
 ------
 
@@ -10,8 +22,12 @@ CHANGELOG
   which nodes a session is connected to (JAVA-265)
 - [new] Add QueryBuilder syntax for tuples in where clauses (syntax
   introduced in Cassandra 2.0.6) (JAVA-327)
+- [improvement] Properly validate arguments of PoolingOptions methods
+  (JAVA-359)
 - [bug] Fix bogus rejection of BigInteger in 'execute with values'
   (JAVA-368)
+- [bug] Signal connection failure sooner to avoid missing them
+  (JAVA-367)
 
 Merged from 1.0 branch:
 

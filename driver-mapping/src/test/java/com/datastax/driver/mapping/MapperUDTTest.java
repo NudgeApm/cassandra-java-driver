@@ -7,11 +7,14 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Sets;
 import org.testng.annotations.Test;
 import org.testng.collections.Lists;
-import static org.testng.Assert.assertEquals;
 
-import com.datastax.driver.core.*;
+import com.datastax.driver.core.CCMBridge;
+import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.utils.UUIDs;
 import com.datastax.driver.mapping.annotations.*;
+
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertTrue;
 
 public class MapperUDTTest extends CCMBridge.PerClassSingleNodeCluster {
 
@@ -171,8 +174,11 @@ public class MapperUDTTest extends CCMBridge.PerClassSingleNodeCluster {
         @Query("SELECT * FROM ks.users WHERE user_id=:userId")
         User getOne(@Param("userId") UUID userId);
 
-        @Query("UPDATE ks.users SET other_addresses[:arg1]=:arg2 WHERE user_id=:arg0")
-        ResultSet addAddress(UUID id, String addressName, Address address);
+        @Query("UPDATE ks.users SET other_addresses[:name]=:address WHERE user_id=:id")
+        ResultSet addAddress(@Param("id") UUID id, @Param("name") String addressName, @Param("address") Address address);
+
+        @Query("SELECT * FROM ks.users")
+        public Result<User> getAll();
     }
 
     @Test(groups = "short")
@@ -201,6 +207,11 @@ public class MapperUDTTest extends CCMBridge.PerClassSingleNodeCluster {
 
         User u2 = userAccessor.getOne(u1.getUserId());
         assertEquals(workAddress, u2.getOtherAddresses().get("work"));
+
+        // No argument call
+        Result<User> u = userAccessor.getAll();
+        assertEquals(u.one(), u2);
+        assertTrue(u.isExhausted());
     }
 
     @UDT(keyspace = "ks", name = "sub")

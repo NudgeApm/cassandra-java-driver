@@ -21,6 +21,8 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,12 +35,18 @@ public class Host {
 
     private static final Logger logger = LoggerFactory.getLogger(Host.class);
 
+
     private final InetSocketAddress address;
 
-    private volatile boolean isUp;
+    enum State { ADDED, DOWN, SUSPECT, UP }
+    volatile State state;
+
     private final ConvictionPolicy policy;
 
-    // Tracks reconnection attempts to that host so we avoid adding multiple tasks
+    // Tracks the first "immediate" reconnection attempt when a node get suspected.
+    final AtomicReference<ListenableFuture<?>> initialReconnectionAttempt = new AtomicReference<ListenableFuture<?>>(Futures.immediateFuture(null));
+
+    // Tracks later reconnection attempts to that host so we avoid adding multiple tasks.
     final AtomicReference<ScheduledFuture<?>> reconnectionAttempt = new AtomicReference<ScheduledFuture<?>>();
 
     final ExecutionInfo defaultExecutionInfo;
@@ -63,6 +71,7 @@ public class Host {
         this.address = address;
         this.policy = policy.create(this);
         this.defaultExecutionInfo = new ExecutionInfo(ImmutableList.of(this));
+        this.state = State.ADDED;
     }
 
     void setLocationInfo(String datacenter, String rack) {
@@ -106,7 +115,7 @@ public class Host {
     /**
      * Returns the name of the datacenter this host is part of.
      * <p>
-     * The returned datacenter name is the one as known by Cassandra. 
+     * The returned datacenter name is the one as known by Cassandra.
      * It is also possible for this information to be unavailable. In that
      * case this method returns {@code null}, and the caller should always be aware
      * of this possibility.
@@ -157,7 +166,22 @@ public class Host {
      * @return whether the node is considered up.
      */
     public boolean isUp() {
-        return isUp;
+        // Consider a suspected host UP until proved otherwise to avoid
+        // having the status flapping if it turns out the host is not really down.
+        return state == State.UP || state == State.SUSPECT;
+    }
+
+    public ListenableFuture<?> getInitialReconnectionAttemptFuture() {
+        return initialReconnectionAttempt.get();
+    }
+
+    @Override
+    public int hashCode() {
+        return address.hashCode();
+    }
+
+    boolean wasJustAdded() {
+        return state == State.ADDED;
     }
 
     @Override
@@ -166,12 +190,20 @@ public class Host {
     }
 
     void setDown() {
-        isUp = false;
+        state = State.DOWN;
     }
 
     void setUp() {
         policy.reset();
-        isUp = true;
+        state = State.UP;
+    }
+
+    boolean setSuspected() {
+        if (state != State.UP)
+            return false;
+
+        state = State.SUSPECT;
+        return true;
     }
 
     boolean signalConnectionFailure(ConnectionException exception) {
@@ -182,10 +214,9 @@ public class Host {
      * Interface for listeners that are interested in hosts added, up, down and
      * removed events.
      * <p>
-     * It is possible for the same event to be fired multiple times, 
-     * particularly for up or down events. Therefore, a listener should
-     * ignore the same event if it has already been notified of a
-     * node's state.
+     * It is possible for the same event to be fired multiple times,
+     * particularly for up or down events. Therefore, a listener should ignore
+     * the same event if it has already been notified of a node's state.
      */
     public interface StateListener {
 
@@ -204,6 +235,28 @@ public class Host {
          * @param host the host that has been detected up.
          */
         public void onUp(Host host);
+
+        /**
+         * Called when a node is suspected to be dead.
+         * <p>
+         * A node is suspected to be dead when an error occurs on one of it's
+         * opened connection. As soon as an host is suspected, a connection attempt
+         * to that host is immediately tried. If this succeed, then it means that
+         * the connection was disfunctional but that the node was not really down.
+         * If this fails however, this means the node is truly dead, onDown() is
+         * called and further reconnection attempts are scheduled according to the
+         * {@link ReconnectionPolicy} in place.
+         * <p>
+         * When this event is triggered, it is possible to call the host
+         * {@link getInitialReconnectionAttemptFuture} method to wait until the
+         * initial and immediate reconnection attempt succeed or fail.
+         * <p>
+         * Note that some StateListener may ignore that event. If a node that
+         * that is suspected down turns out to be truly down (that is, the driver
+         * cannot successfully connect to it right away), then {@link onDown} will
+         * be called.
+         */
+        public void onSuspected(Host host);
 
         /**
          * Called when a node is determined to be down.
