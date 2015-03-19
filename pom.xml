@@ -35,9 +35,9 @@
   <modules>
     <module>driver-core</module>
     <module>driver-mapping</module>
-    <module>driver-examples</module>
+    <!--module>driver-examples</module>
     <module>driver-dse</module>
-    <module>driver-dist</module>
+    <module>driver-dist</module-->
   </modules>
 
   <properties>
