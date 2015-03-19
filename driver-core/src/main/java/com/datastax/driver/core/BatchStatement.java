@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -24,16 +24,21 @@ import java.util.List;
 
 import com.google.common.collect.ImmutableList;
 
+import com.datastax.driver.core.exceptions.UnsupportedFeatureException;
+
 /**
- * A statement that group a number of {@link Statement} so they get executed as
+ * A statement that groups a number of {@link Statement} so they get executed as
  * a batch.
  * <p>
  * Note: BatchStatement is not supported with the native protocol version 1: you
- * will get an {@link UnsupportedProtocolVersionException} when submitting one if
+ * will get an {@link UnsupportedFeatureException} when submitting one if
  * version 1 of the protocol is in use (i.e. if you've force version 1 through
  * {@link Cluster.Builder#withProtocolVersion} or you use Cassandra 1.2). Note
  * however that you can still use <a href="http://cassandra.apache.org/doc/cql3/CQL.html#batchStmt">CQL Batch statements</a>
  * even with the protocol version 1.
+ * <p>
+ * Setting a BatchStatement's serial consistency level is only supported with the
+ * native protocol version 3 or higher (see {@link #setSerialConsistencyLevel(ConsistencyLevel)}).
  */
 public class BatchStatement extends Statement {
 
@@ -42,8 +47,8 @@ public class BatchStatement extends Statement {
      */
     public enum Type {
         /**
-         * A logged batch: Cassandra will first the batch to its distributed batch log to
-         * ensure the atomicity of the batch.
+         * A logged batch: Cassandra will first write the batch to its distributed batch log
+         * to ensure the atomicity of the batch.
          */
         LOGGED,
 
@@ -79,7 +84,7 @@ public class BatchStatement extends Statement {
         this.batchType = batchType;
     }
 
-    IdAndValues getIdAndValues(int protocolVersion) {
+    IdAndValues getIdAndValues(ProtocolVersion protocolVersion) {
         IdAndValues idAndVals = new IdAndValues(statements.size());
         for (Statement statement : statements) {
             if (statement instanceof RegularStatement) {
@@ -104,8 +109,13 @@ public class BatchStatement extends Statement {
      * Note that {@code statement} can be any {@code Statement}. It is allowed to mix
      * {@code RegularStatement} and {@code BoundStatement} in the same
      * {@code BatchStatement} in particular. Adding another {@code BatchStatement}
-     * is also allowed for convenient and is equivalent to adding all the {@code Statement}
+     * is also allowed for convenience and is equivalent to adding all the {@code Statement}
      * contained in that other {@code BatchStatement}.
+     * <p>
+     * When adding a {@code BoundStatement}, all of its values must be set, otherwise an
+     * {@code IllegalStateException} will be thrown when submitting the batch statement.
+     * See {@link BoundStatement} for more details, in particular how to handle {@code null}
+     * values.
      * <p>
      * Please note that the options of the added Statement (all those defined directly by the
      * {@link Statement} class: consistency level, fetch size, tracing, ...) will be ignored
@@ -172,23 +182,34 @@ public class BatchStatement extends Statement {
     }
 
     /**
-     * Throws an {@code UnsupportedOperationException} as setting the serial consistency is
-     * currently not supported for protocol batches by Cassandra.
+     * Returns the number of elements in this batch.
+     *
+     * @return the number of elements in this batch.
+     */
+    public int size() {
+        return statements.size();
+    }
+
+    /**
+     * Sets the serial consistency level for the query.
      * <p>
-     * The current version of the protocol uses does not allow to provide a serial consistency level
-     * for protocol batches (the batch created through this class). This is fixed by the protocol
-     * version 3 that will be part of Cassandra 2.1 and will be supported by the driver version 2.1.
-     * Until then, protocol batch with conditions will have their serial consistency level hardcoded
-     * to SERIAL. If you need to execute a batch with LOCAL_SERIAL, you will have to use a CQL batch.
+     * This is only supported with version 3 or higher of the native protocol. If you call
+     * this method when version 2 is in use, you will get an {@link UnsupportedFeatureException}
+     * when submitting the statement. With version 2, protocol batches with conditions
+     * have their serial consistency level hardcoded to SERIAL; if you need to execute a batch
+     * with LOCAL_SERIAL, you will have to use a CQL batch.
      *
-     * @param serialConsistency the serial consistency level
-     * @return nothing since this call currently always throws an {@code UnsupportedOperationException}.
+     * @param serialConsistency the serial consistency level to set.
+     * @return this {@code Statement} object.
      *
-     * @throws UnsupportedOperationException see above.
+     * @throws IllegalArgumentException if {@code serialConsistency} is not one of
+     * {@code ConsistencyLevel.SERIAL} or {@code ConsistencyLevel.LOCAL_SERIAL}.
+     *
+     * @see Statement#setSerialConsistencyLevel(ConsistencyLevel)
      */
     @Override
-    public Statement setSerialConsistencyLevel(ConsistencyLevel serialConsistency) {
-        throw new UnsupportedOperationException();
+    public BatchStatement setSerialConsistencyLevel(ConsistencyLevel serialConsistency) {
+        return (BatchStatement) super.setSerialConsistencyLevel(serialConsistency);
     }
 
     @Override
@@ -209,6 +230,12 @@ public class BatchStatement extends Statement {
                 return keyspace;
         }
         return null;
+    }
+
+    void ensureAllSet() {
+        for (Statement statement : statements)
+            if (statement instanceof BoundStatement)
+                ((BoundStatement) statement).ensureAllSet();
     }
 
     static class IdAndValues {

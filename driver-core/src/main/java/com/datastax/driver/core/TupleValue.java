@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ public class TupleValue extends AbstractAddressableByIndexData<TupleValue> {
      */
     TupleValue(TupleType type) {
         // All things in a tuple are encoded with the protocol v3
-        super(3, type.getComponentTypes().size());
+        super(ProtocolVersion.V3, type.getComponentTypes().size());
         this.type = type;
     }
 
@@ -81,7 +81,7 @@ public class TupleValue extends AbstractAddressableByIndexData<TupleValue> {
                 sb.append(", ");
 
             DataType dt = getType(i);
-            sb.append(values[i] == null ? "null" : dt.format(dt.deserialize(values[i], 3)));
+            sb.append(values[i] == null ? "null" : dt.format(dt.deserialize(values[i], ProtocolVersion.V3)));
         }
         sb.append(")");
         return sb.toString();

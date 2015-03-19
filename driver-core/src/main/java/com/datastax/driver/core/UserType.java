@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@ import java.util.*;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterators;
+import com.google.common.reflect.TypeToken;
 
 import com.datastax.driver.core.exceptions.InvalidTypeException;
 
@@ -74,7 +75,7 @@ public class UserType extends DataType implements Iterable<UserType.Field>{
 
     @SuppressWarnings("unchecked")
     @Override
-    TypeCodec<Object> codec(int protocolVersion) {
+    TypeCodec<Object> codec(ProtocolVersion protocolVersion) {
         return (TypeCodec)TypeCodec.udtOf(this);
     }
 
@@ -167,6 +168,16 @@ public class UserType extends DataType implements Iterable<UserType.Field>{
     }
 
     @Override
+    public boolean isFrozen() {
+        return true;
+    }
+
+    @Override
+    boolean canBeDeserializedAs(TypeToken typeToken) {
+        return typeToken.isAssignableFrom(getName().javaType);
+    }
+
+    @Override
     public final int hashCode() {
         return Arrays.hashCode(new Object[]{ name, keyspace, typeName, byIdx });
     }
@@ -225,12 +236,12 @@ public class UserType extends DataType implements Iterable<UserType.Field>{
             TableMetadata.newLine(sb, formatted);
         }
 
-        return sb.append(')').toString();
+        return sb.append(");").toString();
     }
 
     @Override
     public String toString() {
-        return Metadata.escapeId(getKeyspace()) + '.' + Metadata.escapeId(getTypeName());
+        return "frozen<" + Metadata.escapeId(getKeyspace()) + '.' + Metadata.escapeId(getTypeName()) + ">";
     }
 
     // We don't want to expose that, it's already exposed through DataType.parse
@@ -272,7 +283,7 @@ public class UserType extends DataType implements Iterable<UserType.Field>{
             }
 
             DataType dt = getFieldType(name);
-            v.setBytesUnsafe(name, dt.serialize(dt.parse(value.substring(idx, n)), 3));
+            v.setBytesUnsafe(name, dt.serialize(dt.parse(value.substring(idx, n)), ProtocolVersion.V3));
             idx = n;
 
             idx = ParseUtils.skipSpaces(value, idx);

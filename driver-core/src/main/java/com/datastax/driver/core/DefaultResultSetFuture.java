@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -34,11 +34,11 @@ class DefaultResultSetFuture extends AbstractFuture<ResultSet> implements Result
     private static final Logger logger = LoggerFactory.getLogger(ResultSetFuture.class);
 
     private final SessionManager session;
-    private final int protocolVersion;
+    private final ProtocolVersion protocolVersion;
     private final Message.Request request;
     private volatile RequestHandler handler;
 
-    DefaultResultSetFuture(SessionManager session, int protocolVersion, Message.Request request) {
+    DefaultResultSetFuture(SessionManager session, ProtocolVersion protocolVersion, Message.Request request) {
         this.session = session;
         this.protocolVersion = protocolVersion;
         this.request = request;
@@ -71,29 +71,59 @@ class DefaultResultSetFuture extends AbstractFuture<ResultSet> implements Result
                             ResultSet rs = ArrayBackedResultSet.fromMessage(rm, session, protocolVersion, info, statement);
                             switch (scc.change) {
                                 case CREATED:
-                                    if (scc.columnFamily.isEmpty()) {
-                                        session.cluster.manager.refreshSchemaAndSignal(connection, this, rs, null, null);
-                                    } else {
-                                        session.cluster.manager.refreshSchemaAndSignal(connection, this, rs, scc.keyspace, null);
+                                    switch (scc.target) {
+                                        case KEYSPACE:
+                                            session.cluster.manager.refreshSchemaAndSignal(connection, this, rs, scc.keyspace, null, null);
+                                            break;
+                                        case TABLE:
+                                            session.cluster.manager.refreshSchemaAndSignal(connection, this, rs, scc.keyspace, scc.name, null);
+                                            break;
+                                        case TYPE:
+                                            session.cluster.manager.refreshSchemaAndSignal(connection, this, rs, scc.keyspace, null, scc.name);
+                                            break;
                                     }
                                     break;
                                 case DROPPED:
-                                    if (scc.columnFamily.isEmpty()) {
-                                        // If that the one keyspace we are logged in, reset to null (it shouldn't really happen but ...)
-                                        // Note: Actually, Cassandra doesn't do that so we don't either as this could confuse prepared statements.
-                                        // We'll add it back if CASSANDRA-5358 changes that behavior
-                                        //if (scc.keyspace.equals(session.poolsState.keyspace))
-                                        //    session.poolsState.setKeyspace(null);
-                                        session.cluster.manager.refreshSchemaAndSignal(connection, this, rs, null, null);
-                                    } else {
-                                        session.cluster.manager.refreshSchemaAndSignal(connection, this, rs, scc.keyspace, null);
+                                    KeyspaceMetadata keyspace;
+                                    switch (scc.target) {
+                                        case KEYSPACE:
+                                            // If that the one keyspace we are logged in, reset to null (it shouldn't really happen but ...)
+                                            // Note: Actually, Cassandra doesn't do that so we don't either as this could confuse prepared statements.
+                                            // We'll add it back if CASSANDRA-5358 changes that behavior
+                                            //if (scc.keyspace.equals(session.poolsState.keyspace))
+                                            //    session.poolsState.setKeyspace(null);
+                                            session.cluster.manager.metadata.removeKeyspace(scc.keyspace);
+                                            break;
+                                        case TABLE:
+                                            keyspace = session.cluster.manager.metadata.getKeyspaceInternal(scc.keyspace);
+                                            if (keyspace == null)
+                                                logger.warn("Received a DROPPED notification for table {}.{}, but this keyspace is unknown in our metadata",
+                                                    scc.keyspace, scc.name);
+                                            else
+                                                keyspace.removeTable(scc.name);
+                                            break;
+                                        case TYPE:
+                                            keyspace = session.cluster.manager.metadata.getKeyspaceInternal(scc.keyspace);
+                                            if (keyspace == null)
+                                                logger.warn("Received a DROPPED notification for UDT {}.{}, but this keyspace is unknown in our metadata",
+                                                    scc.keyspace, scc.name);
+                                            else
+                                                keyspace.removeUserType(scc.name);
+                                            break;
                                     }
+                                    this.setResult(rs);
                                     break;
                                 case UPDATED:
-                                    if (scc.columnFamily.isEmpty()) {
-                                        session.cluster.manager.refreshSchemaAndSignal(connection, this, rs, scc.keyspace, null);
-                                    } else {
-                                        session.cluster.manager.refreshSchemaAndSignal(connection, this, rs, scc.keyspace, scc.columnFamily);
+                                    switch (scc.target) {
+                                        case KEYSPACE:
+                                            session.cluster.manager.refreshSchemaAndSignal(connection, this, rs, scc.keyspace, null, null);
+                                            break;
+                                        case TABLE:
+                                            session.cluster.manager.refreshSchemaAndSignal(connection, this, rs, scc.keyspace, scc.name, null);
+                                            break;
+                                        case TYPE:
+                                            session.cluster.manager.refreshSchemaAndSignal(connection, this, rs, scc.keyspace, null, scc.name);
+                                            break;
                                     }
                                     break;
                                 default:
@@ -122,22 +152,23 @@ class DefaultResultSetFuture extends AbstractFuture<ResultSet> implements Result
     }
 
     @Override
-    public void onSet(Connection connection, Message.Response response, long latency) {
+    public void onSet(Connection connection, Message.Response response, long latency, int retryCount) {
         // This is only called for internal calls (i.e, when the callback is not wrapped in ResponseHandler),
         // so don't bother with ExecutionInfo.
         onSet(connection, response, null, null, latency);
     }
 
     @Override
-    public void onException(Connection connection, Exception exception, long latency) {
+    public void onException(Connection connection, Exception exception, long latency, int retryCount) {
         setException(exception);
     }
 
     @Override
-    public void onTimeout(Connection connection, long latency) {
-        // This is only called for internal calls (i.e, when the callback is not wrapped in ResponseHandler).
+    public boolean onTimeout(Connection connection, long latency, int retryCount) {
+        // This is only called for internal calls (i.e, when the future is not wrapped in RequestHandler).
         // So just set an exception for the final result, which should be handled correctly by said internal call.
-        setException(new ConnectionException(connection.address, "Operation timed out"));
+        setException(new OperationTimedOutException(connection.address));
+        return true;
     }
 
     // We sometimes need (in the driver) to set the future from outside this class,
@@ -258,5 +289,12 @@ class DefaultResultSetFuture extends AbstractFuture<ResultSet> implements Result
             throw ((DriverException)e.getCause()).copy();
         else
             throw new DriverInternalError("Unexpected exception thrown", e.getCause());
+    }
+
+    @Override
+    public int retryCount() {
+        // This is only called for internal calls (i.e, when the future is not wrapped in RequestHandler).
+        // There is no retry logic in that case, so the value does not really matter.
+        return 0;
     }
 }

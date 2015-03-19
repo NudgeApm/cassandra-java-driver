@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -19,14 +19,18 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
-import java.text.SimpleDateFormat;
 import java.util.*;
 
+import com.google.common.reflect.TypeToken;
 import org.testng.annotations.Test;
-import static org.testng.Assert.*;
+
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.fail;
 
 import com.datastax.driver.core.exceptions.InvalidTypeException;
 import com.datastax.driver.core.utils.Bytes;
+
+import static com.datastax.driver.core.Assertions.assertThat;
 
 /**
  * DataType simple unit tests.
@@ -57,7 +61,7 @@ public class DataTypeTest {
             case FLOAT:
                 return new String[]{ "2.39", "-12.0" };
             case INET:
-                return new String[]{ "128.2.12.3" };
+                return new String[]{ "'128.2.12.3'" };
             case INT:
                 return new String[]{ "-2", "42" };
             case TIMEUUID:
@@ -202,11 +206,11 @@ public class DataTypeTest {
 
     @Test(groups = "unit")
     public void serializeDeserializeTest() {
-        for (int v = 1; v <= ProtocolOptions.NEWEST_SUPPORTED_PROTOCOL_VERSION; v++)
+        for (ProtocolVersion v : ProtocolVersion.values())
             serializeDeserializeTest(v);
     }
 
-    public void serializeDeserializeTest(int version) {
+    public void serializeDeserializeTest(ProtocolVersion version) {
 
         for (DataType dt : DataType.allPrimitiveTypes()) {
             if (exclude(dt))
@@ -230,11 +234,11 @@ public class DataTypeTest {
 
     @Test(groups = "unit")
     public void serializeDeserializeCollectionsTest() {
-        for (int v = 1; v <= ProtocolOptions.NEWEST_SUPPORTED_PROTOCOL_VERSION; v++)
+        for (ProtocolVersion v : ProtocolVersion.values())
             serializeDeserializeCollectionsTest(v);
     }
 
-    public void serializeDeserializeCollectionsTest(int version) {
+    public void serializeDeserializeCollectionsTest(ProtocolVersion version) {
 
         List<String> l = Arrays.asList("foo", "bar");
 
@@ -245,5 +249,24 @@ public class DataTypeTest {
             DataType.list(DataType.bigint()).serialize(l, version);
             fail("This should not have worked");
         } catch (InvalidTypeException e) { /* That's what we want */ }
+    }
+
+    @Test(groups = "unit")
+    public void should_check_which_java_type_it_can_be_deserialized_to() {
+        assertThat(DataType.cint())
+            .canBeDeserializedAs(TypeToken.of(Integer.class))
+            .canBeDeserializedAs(TypeToken.of(Number.class))
+            .cannotBeDeserializedAs(TypeToken.of(String.class));
+
+        assertThat(DataType.list(DataType.cint()))
+            .canBeDeserializedAs(new TypeToken<List<Integer>>(){})
+            .canBeDeserializedAs(new TypeToken<Collection<Integer>>(){})
+            .cannotBeDeserializedAs(new TypeToken<Set<Integer>>(){})
+            .cannotBeDeserializedAs(new TypeToken<List<String>>(){});
+
+        assertThat(DataType.map(DataType.cint(), DataType.frozenList(DataType.text())))
+            .canBeDeserializedAs(new TypeToken<Map<Integer, List<String>>>(){})
+            .canBeDeserializedAs(new TypeToken<Map<Number, Collection<String>>>(){})
+            .cannotBeDeserializedAs(new TypeToken<Map<Integer, Collection<Integer>>>(){});
     }
 }

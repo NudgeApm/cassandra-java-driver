@@ -1,28 +1,50 @@
+/*
+ *      Copyright (C) 2012-2014 DataStax Inc.
+ *
+ *   Licensed under the Apache License, Version 2.0 (the "License");
+ *   you may not use this file except in compliance with the License.
+ *   You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ */
 package com.datastax.driver.mapping;
 
 import java.util.*;
 
+import com.google.common.collect.Maps;
+import org.testng.annotations.BeforeMethod;
+
 import com.google.common.base.Objects;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Sets;
 import org.testng.annotations.Test;
-import org.testng.collections.Lists;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertNull;
+import static org.testng.Assert.assertTrue;
 
 import com.datastax.driver.core.CCMBridge;
 import com.datastax.driver.core.ResultSet;
+import com.datastax.driver.core.Row;
 import com.datastax.driver.core.utils.UUIDs;
-import com.datastax.driver.mapping.annotations.*;
 
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
+import com.datastax.driver.mapping.annotations.*;
 
 public class MapperUDTTest extends CCMBridge.PerClassSingleNodeCluster {
 
     protected Collection<String> getTableDefinitions() {
         return Arrays.asList("CREATE TYPE address (street text, city text, zip_code int, phones set<text>)",
-                             "CREATE TABLE users (user_id uuid PRIMARY KEY, name text, main_address address, other_addresses map<text,address>)",
-                             "CREATE TYPE sub(i int)",
-                             "CREATE TABLE collection_examples (id int PRIMARY KEY, l list<sub>, s set<sub>, m1 map<int,sub>, m2 map<sub,int>, m3 map<sub,sub>)");
+                             "CREATE TABLE users (user_id uuid PRIMARY KEY, name text, mainaddress frozen<address>, other_addresses map<text,frozen<address>>)");
+    }
+
+    @BeforeMethod(groups = "short")
+    public void clean() {
+        session.execute("TRUNCATE users");
     }
 
     @Table(keyspace = "ks", name = "users",
@@ -35,11 +57,12 @@ public class MapperUDTTest extends CCMBridge.PerClassSingleNodeCluster {
 
         private String name;
 
-        @Column(name = "main_address")
+        @Frozen
         private Address mainAddress;
 
         @Column(name = "other_addresses")
-        private Map<String, Address> otherAddresses;
+        @FrozenValue
+        private Map<String, Address> otherAddresses = Maps.newHashMap();
 
         public User() {
         }
@@ -102,8 +125,13 @@ public class MapperUDTTest extends CCMBridge.PerClassSingleNodeCluster {
 
     @UDT(keyspace = "ks", name = "address")
     public static class Address {
+
+        // Dummy constant to test that static fields are properly ignored
+        public static final int FOO = 1;
+
         private String street;
 
+        @Field // not strictly required, but we want to check that the annotation works without a name
         private String city;
 
         @Field(name = "zip_code")
@@ -177,6 +205,9 @@ public class MapperUDTTest extends CCMBridge.PerClassSingleNodeCluster {
         @Query("UPDATE ks.users SET other_addresses[:name]=:address WHERE user_id=:id")
         ResultSet addAddress(@Param("id") UUID id, @Param("name") String addressName, @Param("address") Address address);
 
+        @Query("UPDATE ks.users SET other_addresses=:addresses where user_id=:id")
+        ResultSet setOtherAddresses(@Param("id") UUID id, @Param("addresses") Map<String, Address> addresses);
+
         @Query("SELECT * FROM ks.users")
         public Result<User> getAll();
     }
@@ -190,6 +221,16 @@ public class MapperUDTTest extends CCMBridge.PerClassSingleNodeCluster {
         m.save(u1);
 
         assertEquals(m.get(u1.getUserId()), u1);
+    }
+
+    @Test(groups = "short")
+    public void should_handle_null_UDT_value() throws Exception {
+        Mapper<User> m = new MappingManager(session).mapper(User.class);
+
+        User u1 = new User("Paul", null);
+        m.save(u1);
+
+        assertNull(m.get(u1.getUserId()).getMainAddress());
     }
 
     @Test(groups = "short")
@@ -208,146 +249,28 @@ public class MapperUDTTest extends CCMBridge.PerClassSingleNodeCluster {
         User u2 = userAccessor.getOne(u1.getUserId());
         assertEquals(workAddress, u2.getOtherAddresses().get("work"));
 
+        // Adding a null value should remove it from the list.
+        userAccessor.addAddress(u1.getUserId(), "work", null);
+        User u3 = userAccessor.getOne(u1.getUserId());
+        assertThat(u3.getOtherAddresses()).doesNotContainKey("work");
+
+        // Add a bunch of other addresses
+        Map<String, Address> otherAddresses = Maps.newHashMap();
+        otherAddresses.put("work", workAddress);
+        otherAddresses.put("cabin", new Address("42 Middle of Nowhere", "Lake of the Woods", 49553, "8675309"));
+
+        userAccessor.setOtherAddresses(u1.getUserId(), otherAddresses);
+        User u4 = userAccessor.getOne(u1.getUserId());
+        assertThat(u4.getOtherAddresses()).isEqualTo(otherAddresses);
+
+        // Nullify other addresses
+        userAccessor.setOtherAddresses(u1.getUserId(), null);
+        User u5 = userAccessor.getOne(u1.getUserId());
+        assertThat(u5.getOtherAddresses()).isEmpty();
+
         // No argument call
         Result<User> u = userAccessor.getAll();
-        assertEquals(u.one(), u2);
+        assertEquals(u.one(), u5);
         assertTrue(u.isExhausted());
-    }
-
-    @UDT(keyspace = "ks", name = "sub")
-    public static class Sub {
-        private int i;
-
-        public Sub() {
-        }
-
-        public Sub(int i) {
-            this.i = i;
-        }
-
-        public int getI() {
-            return i;
-        }
-
-        public void setI(int i) {
-            this.i = i;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (other instanceof Sub) {
-                Sub that = (Sub) other;
-                return this.i == that.i;
-            }
-            return false;
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hashCode(i);
-        }
-    }
-
-    @Table(keyspace = "ks", name = "collection_examples")
-    public static class CollectionExamples {
-        @PartitionKey
-        private int id;
-
-        private List<Sub> l;
-
-        private Set<Sub> s;
-
-        private Map<Integer, Sub> m1;
-
-        private Map<Sub, Integer> m2;
-
-        private Map<Sub, Sub> m3;
-
-        public CollectionExamples() {
-        }
-
-        public CollectionExamples(int id, int value) {
-            this.id = id;
-            // Just fill the collections with random values
-            Sub sub1 = new Sub(value);
-            Sub sub2 = new Sub(value + 1);
-            this.l = Lists.newArrayList(sub1, sub2);
-            this.s = Sets.newHashSet(sub1, sub2);
-            this.m1 = ImmutableMap.of(1, sub1, 2, sub2);
-            this.m2 = ImmutableMap.of(sub1, 1, sub2, 2);
-            this.m3 = ImmutableMap.of(sub1, sub1, sub2, sub2);
-        }
-
-        public int getId() {
-            return id;
-        }
-
-        public void setId(int id) {
-            this.id = id;
-        }
-
-        public List<Sub> getL() {
-            return l;
-        }
-
-        public void setL(List<Sub> l) {
-            this.l = l;
-        }
-
-        public Set<Sub> getS() {
-            return s;
-        }
-
-        public void setS(Set<Sub> s) {
-            this.s = s;
-        }
-
-        public Map<Integer, Sub> getM1() {
-            return m1;
-        }
-
-        public void setM1(Map<Integer, Sub> m1) {
-            this.m1 = m1;
-        }
-
-        public Map<Sub, Integer> getM2() {
-            return m2;
-        }
-
-        public void setM2(Map<Sub, Integer> m2) {
-            this.m2 = m2;
-        }
-
-        public Map<Sub, Sub> getM3() {
-            return m3;
-        }
-
-        public void setM3(Map<Sub, Sub> m3) {
-            this.m3 = m3;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (other instanceof CollectionExamples) {
-                CollectionExamples that = (CollectionExamples) other;
-                return Objects.equal(this.id, that.id) &&
-                       Objects.equal(this.l, that.l) &&
-                       Objects.equal(this.s, that.s) &&
-                       Objects.equal(this.m1, that.m1) &&
-                       Objects.equal(this.m2, that.m2) &&
-                       Objects.equal(this.m3, that.m3);
-            }
-            return false;
-        }
-    }
-
-    @Test(groups = "short")
-    public void testCollections() throws Exception {
-        Mapper<CollectionExamples> m = new MappingManager(session).mapper(CollectionExamples.class);
-
-        CollectionExamples c = new CollectionExamples(1, 1);
-        m.save(c);
-
-        assertEquals(m.get(c.getId()), c);
     }
 }

@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -17,12 +17,18 @@ package com.datastax.driver.core;
 
 import java.util.*;
 
+import static org.testng.Assert.assertFalse;
+
 import org.testng.annotations.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
 import com.datastax.driver.core.exceptions.NoHostAvailableException;
 import com.datastax.driver.core.exceptions.UnsupportedFeatureException;
+import com.datastax.driver.core.utils.CassandraVersion;
+
 import static com.datastax.driver.core.TestUtils.*;
 
 /**
@@ -404,8 +410,47 @@ public class PreparedStatementTest extends CCMBridge.PerClassSingleNodeCluster {
             assertEquals("bar", all.get(2).getString("v"));
         } catch (UnsupportedFeatureException e) {
             // This is expected when testing the protocol v1
-            if (cluster.getConfiguration().getProtocolOptions().getProtocolVersion() != 1)
+            if (cluster.getConfiguration().getProtocolOptions().getProtocolVersionEnum() != ProtocolVersion.V1)
                 throw e;
         }
+    }
+
+    @Test(groups = "short", expectedExceptions = { IllegalStateException.class })
+    public void unboundVariableInBoundStatementTest() {
+        PreparedStatement ps = session.prepare("INSERT INTO " + SIMPLE_TABLE + " (k, i) VALUES (?, ?)");
+        BoundStatement bs = ps.bind("k");
+        assertFalse(bs.isSet("i"));
+        session.execute(bs);
+    }
+
+    @Test(groups = "short", expectedExceptions = { IllegalStateException.class })
+    @CassandraVersion(major=2.0)
+    public void unboundVariableInBatchStatementTest() {
+        PreparedStatement ps = session.prepare("INSERT INTO " + SIMPLE_TABLE + " (k, i) VALUES (?, ?)");
+        BatchStatement batch = new BatchStatement();
+        batch.add(ps.bind("k"));
+        session.execute(batch);
+    }
+
+    @Test(groups="short")
+    public void should_set_routing_key_on_case_insensitive_keyspace_and_table() {
+        session.execute("CREATE TABLE ks.foo (i int PRIMARY KEY)");
+
+        PreparedStatement ps = session.prepare("INSERT INTO ks.foo (i) VALUES (?)");
+        BoundStatement bs = ps.bind(1);
+        assertThat(bs.getRoutingKey()).isNotNull();
+    }
+
+    @Test(groups="short")
+    public void should_set_routing_key_on_case_sensitive_keyspace_and_table() {
+        session.execute("CREATE KEYSPACE \"Test\" WITH replication = { "
+            + "  'class': 'SimpleStrategy',"
+            + "  'replication_factor': '1'"
+            + "}");
+        session.execute("CREATE TABLE \"Test\".\"Foo\" (i int PRIMARY KEY)");
+
+        PreparedStatement ps = session.prepare("INSERT INTO \"Test\".\"Foo\" (i) VALUES (?)");
+        BoundStatement bs = ps.bind(1);
+        assertThat(bs.getRoutingKey()).isNotNull();
     }
 }

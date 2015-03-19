@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -23,7 +23,9 @@ import java.util.*;
 import java.util.regex.Pattern;
 
 import com.datastax.driver.core.DataType;
-import com.datastax.driver.core.utils.Bytes;
+import com.datastax.driver.core.ProtocolVersion;
+import com.datastax.driver.core.TupleValue;
+import com.datastax.driver.core.UDTValue;
 
 // Static utilities private to the query builder
 abstract class Utils {
@@ -39,7 +41,7 @@ abstract class Utils {
         return sb;
     }
 
-    static StringBuilder joinAndAppendNames(StringBuilder sb, String separator, List<Object> values) {
+    static StringBuilder joinAndAppendNames(StringBuilder sb, String separator, List<?> values) {
         for (int i = 0; i < values.size(); i++) {
             if (i > 0)
                 sb.append(separator);
@@ -48,7 +50,7 @@ abstract class Utils {
         return sb;
     }
 
-    static StringBuilder joinAndAppendValues(StringBuilder sb, String separator, List<Object> values, List<Object> variables) {
+    static StringBuilder joinAndAppendValues(StringBuilder sb, String separator, List<?> values, List<Object> variables) {
         for (int i = 0; i < values.size(); i++) {
             if (i > 0)
                 sb.append(separator);
@@ -59,7 +61,7 @@ abstract class Utils {
 
     // Returns null if it's not really serializable (function call, bind markers, ...)
     static boolean isSerializable(Object value) {
-        if (value == QueryBuilder.bindMarker() || value instanceof FCall || value instanceof CName)
+        if (value instanceof BindMarker || value instanceof FCall || value instanceof CName)
             return false;
 
         // We also don't serialize fixed size number types. The reason is that if we do it, we will
@@ -71,7 +73,7 @@ abstract class Utils {
         return true;
     }
 
-    static ByteBuffer[] convert(List<Object> values, int protocolVersion) {
+    static ByteBuffer[] convert(List<Object> values, ProtocolVersion protocolVersion) {
         ByteBuffer[] serializedValues = new ByteBuffer[values.size()];
         for (int i = 0; i < values.size(); i++) {
             try {
@@ -93,7 +95,7 @@ abstract class Utils {
         return sb;
     }
 
-    private static StringBuilder appendValue(Object value, StringBuilder sb) {
+    static StringBuilder appendValue(Object value, StringBuilder sb) {
         // That is kind of lame but lacking a better solution
         if (appendValueIfLiteral(value, sb))
             return sb;
@@ -101,12 +103,10 @@ abstract class Utils {
         if (appendValueIfCollection(value, sb))
             return sb;
 
-        appendStringIfValid(value, sb);
-        return sb;
-    }
+        if (appendValueIfUdt(value, sb))
+            return sb;
 
-    static StringBuilder appendFlatValue(Object value, StringBuilder sb) {
-        if (appendValueIfLiteral(value, sb))
+        if (appendValueIfTuple(value, sb))
             return sb;
 
         appendStringIfValid(value, sb);
@@ -132,13 +132,13 @@ abstract class Utils {
             sb.append(value);
             return true;
         } else if (value instanceof InetAddress) {
-            sb.append('\'').append(((InetAddress)value).getHostAddress()).append('\'');
+            sb.append(DataType.inet().format(value));
             return true;
         } else if (value instanceof Date) {
-            sb.append(((Date)value).getTime());
+            sb.append(DataType.timestamp().format(value));
             return true;
         } else if (value instanceof ByteBuffer) {
-            sb.append(Bytes.toHexString((ByteBuffer)value));
+            sb.append(DataType.blob().format(value));
             return true;
         } else if (value instanceof BindMarker) {
             sb.append(value);
@@ -196,7 +196,7 @@ abstract class Utils {
         for (int i = 0; i < l.size(); i++) {
             if (i > 0)
                 sb.append(',');
-            appendFlatValue(l.get(i), sb);
+            appendValue(l.get(i), sb);
         }
         sb.append(']');
         return sb;
@@ -207,7 +207,7 @@ abstract class Utils {
         boolean first = true;
         for (Object elt : s) {
             if (first) first = false; else sb.append(',');
-            appendFlatValue(elt, sb);
+            appendValue(elt, sb);
         }
         sb.append('}');
         return sb;
@@ -221,16 +221,34 @@ abstract class Utils {
                 first = false;
             else
                 sb.append(',');
-            appendFlatValue(entry.getKey(), sb);
+            appendValue(entry.getKey(), sb);
             sb.append(':');
-            appendFlatValue(entry.getValue(), sb);
+            appendValue(entry.getValue(), sb);
         }
         sb.append('}');
         return sb;
     }
 
+    private static boolean appendValueIfUdt(Object value, StringBuilder sb) {
+        if (value instanceof UDTValue) {
+            sb.append(((UDTValue)value).toString());
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    private static boolean appendValueIfTuple(Object value, StringBuilder sb) {
+        if (value instanceof TupleValue) {
+            sb.append(((TupleValue)value).toString());
+            return true;
+        } else {
+            return false;
+        }
+    }
+
     static boolean containsBindMarker(Object value) {
-        if (value == QueryBuilder.bindMarker())
+        if (value instanceof BindMarker)
             return true;
 
         if (!(value instanceof FCall))

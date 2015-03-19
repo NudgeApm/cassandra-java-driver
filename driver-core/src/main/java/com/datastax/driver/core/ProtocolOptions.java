@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -15,15 +15,10 @@
  */
 package com.datastax.driver.core;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 /**
  * Options of the Cassandra native binary protocol.
  */
 public class ProtocolOptions {
-
-    private static final Logger logger = LoggerFactory.getLogger(ProtocolOptions.class);
 
     /**
      * Compression supported by the Cassandra binary protocol.
@@ -68,14 +63,24 @@ public class ProtocolOptions {
     public static final int DEFAULT_PORT = 9042;
 
     /**
-     * The newest version of the protocol that this version of the driver support.
+     * The default value for {@link #getMaxSchemaAgreementWaitSeconds()}: 10.
      */
-    public static final int NEWEST_SUPPORTED_PROTOCOL_VERSION = 2;
+    public static final int DEFAULT_MAX_SCHEMA_AGREEMENT_WAIT_SECONDS = 10;
+
+    /**
+     * The newest version of the protocol that this version of the driver support.
+     *
+     * @deprecated This is provided for backward compatibility; use {@link ProtocolVersion#NEWEST_SUPPORTED} instead.
+     */
+    @Deprecated
+    public static final int NEWEST_SUPPORTED_PROTOCOL_VERSION = ProtocolVersion.NEWEST_SUPPORTED.toInt();
 
     private volatile Cluster.Manager manager;
 
     private final int port;
-    final int initialProtocolVersion; // What the user asked us. Will be -1 by default.
+    final ProtocolVersion initialProtocolVersion; // What the user asked us. Will be null by default.
+
+    private final int maxSchemaAgreementWaitSeconds;
 
     private final SSLOptions sslOptions; // null if no SSL
     private final AuthProvider authProvider;
@@ -99,7 +104,7 @@ public class ProtocolOptions {
      * @param port the port to use for the binary protocol.
      */
     public ProtocolOptions(int port) {
-        this(port, -1, null, AuthProvider.NONE);
+        this(port, null, DEFAULT_MAX_SCHEMA_AGREEMENT_WAIT_SECONDS, null, AuthProvider.NONE);
     }
 
     /**
@@ -107,24 +112,30 @@ public class ProtocolOptions {
      * and SSL context.
      *
      * @param port the port to use for the binary protocol.
-     * @param protocolVersion the protocol version to use. This can be a negative number, in which case the
-     * version uses will be the biggest version supported by the <em>first</em> node the driver connects to.
-     * Otherwise, it must be between 1 and {@code NEWEST_SUPPORTED_PROTOCOL_VERSION} to force using a particular
-     * protocol version. See
-     * {@link Cluster.Builder#withProtocolVersion} for more details.
+     * @param protocolVersion the protocol version to use. This can be {@code null}, in which case the
+     * version used will be the biggest version supported by the <em>first</em> node the driver connects to.
+     * See {@link Cluster.Builder#withProtocolVersion} for more details.
      * @param sslOptions the SSL options to use. Use {@code null} if SSL is not
      * to be used.
      * @param authProvider the {@code AuthProvider} to use for authentication against
      * the Cassandra nodes.
      */
-    public ProtocolOptions(int port, int protocolVersion, SSLOptions sslOptions, AuthProvider authProvider) {
+    public ProtocolOptions(int port, ProtocolVersion protocolVersion, int maxSchemaAgreementWaitSeconds, SSLOptions sslOptions, AuthProvider authProvider) {
         this.port = port;
         this.initialProtocolVersion = protocolVersion;
+        this.maxSchemaAgreementWaitSeconds = maxSchemaAgreementWaitSeconds;
         this.sslOptions = sslOptions;
         this.authProvider = authProvider;
+    }
 
-        if (protocolVersion == 0 || protocolVersion > NEWEST_SUPPORTED_PROTOCOL_VERSION)
-            throw new IllegalArgumentException(String.format("Unsupported protocol version %d; valid values must be between 1 and %d or negative (for auto-detect).", protocolVersion, NEWEST_SUPPORTED_PROTOCOL_VERSION));
+    /**
+     * @throws IllegalArgumentException if {@code protocolVersion} does not correspond to any known version.
+     *
+     * @deprecated This is provided for backward compatibility; use {@link #ProtocolOptions(int, ProtocolVersion, int, SSLOptions, AuthProvider))} instead.
+     */
+    @Deprecated
+    public ProtocolOptions(int port, int protocolVersion, SSLOptions sslOptions, AuthProvider authProvider) {
+        this(port, ProtocolVersion.fromInt(protocolVersion), DEFAULT_MAX_SCHEMA_AGREEMENT_WAIT_SECONDS, sslOptions, authProvider);
     }
 
     void register(Cluster.Manager manager) {
@@ -143,15 +154,24 @@ public class ProtocolOptions {
     /**
      * The protocol version used by the Cluster instance.
      *
-     * @return the protocol version in use. This might return a negative value if a particular
+     * @return the protocol version in use. This might return {@code null} if a particular
      * version hasn't been forced by the user (using say {Cluster.Builder#withProtocolVersion})
      * <em>and</em> this Cluster instance has not yet connected to any node (but as soon as the
-     * Cluster instance is connected, this is guaranteed to return a value between 1 and
-     * {@code NEWEST_SUPPORTED_PROTOCOL_VERSION}). Note that nodes that do not support this protocol
-     * version will be ignored.
+     * Cluster instance is connected, this is guaranteed to return a non-null value). Note that
+     * nodes that do not support this protocol version will be ignored.
      */
-    public int getProtocolVersion() {
+    public ProtocolVersion getProtocolVersionEnum() {
         return manager.connectionFactory.protocolVersion;
+    }
+
+    /**
+     * The protocol version used by the Cluster instance, as a number.
+     *
+     * @deprecated This is provided for backward compatibility, use {@link #getProtocolVersionEnum()} instead.
+     */
+    @Deprecated
+    public int getProtocolVersion() {
+        return getProtocolVersionEnum().toInt();
     }
 
     /**
@@ -186,6 +206,15 @@ public class ProtocolOptions {
 
         this.compression = compression;
         return this;
+    }
+
+    /**
+     * Returns the maximum time to wait for schema agreement before returning from a DDL query.
+     *
+     * @return the time.
+     */
+    public int getMaxSchemaAgreementWaitSeconds() {
+        return maxSchemaAgreementWaitSeconds;
     }
 
     /**

@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -18,6 +18,9 @@ package com.datastax.driver.core;
 import java.util.*;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.reflect.TypeToken;
+
+import com.datastax.driver.core.exceptions.InvalidTypeException;
 
 /**
  * A tuple type.
@@ -35,7 +38,7 @@ public class TupleType extends DataType {
 
     @SuppressWarnings("unchecked")
     @Override
-    TypeCodec<Object> codec(int protocolVersion) {
+    TypeCodec<Object> codec(ProtocolVersion protocolVersion) {
         return (TypeCodec)TypeCodec.tupleOf(this);
     }
 
@@ -93,8 +96,18 @@ public class TupleType extends DataType {
 
         TupleValue t = newValue();
         for (int i = 0; i < values.length; i++)
-            t.setValue(i, values[i] == null ? null : types.get(i).serialize(values[i], 3));
+            t.setValue(i, values[i] == null ? null : types.get(i).serialize(values[i], ProtocolVersion.V3));
         return t;
+    }
+
+    @Override
+    public boolean isFrozen() {
+        return true;
+    }
+
+    @Override
+    boolean canBeDeserializedAs(TypeToken typeToken) {
+        return typeToken.isAssignableFrom(getName().javaType);
     }
 
     @Override
@@ -115,9 +128,9 @@ public class TupleType extends DataType {
     public String toString() {
         StringBuilder sb = new StringBuilder();
         for (DataType type : types) {
-            sb.append(sb.length() == 0 ? "tuple<" : ", ");
+            sb.append(sb.length() == 0 ? "frozen<tuple<" : ", ");
             sb.append(type);
         }
-        return sb.append(">").toString();
+        return sb.append(">>").toString();
     }
 }

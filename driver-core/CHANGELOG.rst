@@ -1,6 +1,294 @@
 CHANGELOG
 =========
 
+2.1.5:
+------
+
+- [bug] Authorize Null parameter in Accessor method (JAVA-575)
+- [improvement] Support C* 2.1.3's nested collections (JAVA-570)
+- [bug] Fix checks on mapped collection types (JAVA-612)
+- [bug] Fix QueryBuilder.putAll() when the collection contains UDTs (JAVA-672)
+
+Merged from 2.0 branch:
+
+- [new feature] Add AddressTranslater for EC2 multi-region deployment (JAVA-518)
+- [improvement] Add connection heartbeat (JAVA-533)
+- [improvement] Reduce level of logs on missing rpc_address (JAVA-568)
+- [improvement] Expose node token and range information (JAVA-312, JAVA-681)
+- [bug] Fix cluster name mismatch check at startup (JAVA-595)
+- [bug] Fix guava dependency when using OSGI (JAVA-620)
+- [bug] Fix handling of DROP events when ks name is case-sensitive (JAVA-678)
+- [improvement] Use List<?> instead of List<Object> in QueryBuilder API
+  (JAVA-631)
+- [improvement] Exclude Netty POM from META-INF in shaded JAR (JAVA-654)
+- [bug] Quote single quotes contained in table comments in asCQLQuery method
+  (JAVA-655)
+- [bug] Empty TokenRange returned in a one token cluster (JAVA-684)
+- [improvement] Expose TokenRange#contains (JAVA-687)
+- [bug] Prevent race between cancellation and query completion (JAVA-614)
+- [bug] Prevent cancel and timeout from cancelling unrelated ResponseHandler if
+  streamId was already released and reused (JAVA-632).
+- [bug] Fix issue when newly opened pool fails before we could mark the node UP
+  (JAVA-642)
+- [bug] Fix unwanted LBP notifications when a contact host is down (JAVA-613)
+- [bug] Fix edge cases where a connection was released twice (JAVA-651).
+- [bug] Fix edge cases in query cancellation (JAVA-653).
+
+
+2.1.4:
+------
+
+Merged from 2.0 branch:
+
+- [improvement] Shade Netty dependency (JAVA-538)
+- [improvement] Target schema refreshes more precisely (JAVA-543)
+- [bug] Don't check rpc_address for control host (JAVA-546)
+- [improvement] Improve message of NoHostAvailableException (JAVA-409)
+- [bug] Rework connection reaper to avoid deadlock (JAVA-556)
+- [bug] Avoid deadlock when multiple connections to the same host get write
+  errors (JAVA-557)
+- [improvement] Make shuffle=true the default for TokenAwarePolicy (JAVA-504)
+- [bug] Fix bug when SUSPECT reconnection succeeds, but one of the pooled
+  connections fails while bringing the node back up (JAVA-577)
+- [bug] Prevent faulty control connection from ignoring reconnecting hosts
+  (JAVA-587)
+- temporarily revert "Add idle timeout to the connection pool" (JAVA-419)
+- [bug] Ensure updateCreatedPools does not add pools for suspected hosts
+  (JAVA-593)
+- [bug] Ensure state change notifications for a given host are handled serially
+  (JAVA-594)
+- [bug] Ensure control connection reconnects when control host is removed
+  (JAVA-597)
+
+
+2.1.3:
+------
+
+- [bug] Ignore static fields in mapper (JAVA-510)
+- [bug] Fix UDT parsing at init when using the default protocol version (JAVA-509)
+- [bug] Fix toString, equals and hashCode on accessor proxies (JAVA-495)
+- [bug] Allow empty name on Column and Field annotations (JAVA-528)
+
+Merged from 2.0 branch:
+
+- [bug] Ensure control connection does not trigger concurrent reconnects (JAVA-497)
+- [improvement] Keep trying to reconnect on authentication errors (JAVA-472)
+- [improvement] Expose close method on load balancing policy (JAVA-463)
+- [improvement] Allow load balancing policy to trigger refresh for a single host (JAVA-459)
+- [bug] Expose an API to cancel reconnection attempts (JAVA-493)
+- [bug] Fix NPE when a connection fails during pool construction (JAVA-503)
+- [improvement] Log datacenter name in DCAware policy's init when it is explicitly provided
+  (JAVA-423)
+- [improvement] Shuffle the replicas in TokenAwarePolicy.newQueryPlan (JAVA-504)
+- [improvement] Make schema agreement wait tuneable (JAVA-507)
+- [improvement] Document how to inject the driver metrics into another registry (JAVA-494)
+- [improvement] Add idle timeout to the connection pool (JAVA-419)
+- [bug] LatencyAwarePolicy does not shutdown executor on invocation of close (JAVA-516)
+- [improvement] Throw an exception when DCAwareRoundRobinPolicy is built with
+  an explicit but null or empty local datacenter (JAVA-451).
+- [bug] Fix check for local contact points in DCAware policy's init (JAVA-511)
+- [improvement] Make timeout on saturated pool customizable (JAVA-457)
+- [improvement] Downgrade Guava to 14.0.1 (JAVA-521)
+- [bug] Fix token awareness for case-sensitive keyspaces and tables (JAVA-526)
+- [bug] Check maximum number of values passed to SimpleStatement (JAVA-515)
+- [improvement] Expose the driver version through the API (JAVA-532)
+- [improvement] Optimize session initialization when some hosts are not
+  responsive (JAVA-522)
+
+
+2.1.2:
+------
+
+- [improvement] Support for native protocol v3 (JAVA-361, JAVA-364, JAVA-467)
+- [bug] Fix UDT fields of type inet in QueryBuilder (JAVA-454)
+- [bug] Exclude transient fields from Frozen checks (JAVA-455)
+- [bug] Fix handling of null collections in mapper (JAVA-453)
+- [improvement] Make implicit column names case-insensitive in mapper (JAVA-452)
+- [bug] Fix named bind markers in QueryBuilder (JAVA-433)
+- [bug] Fix handling of BigInteger in object mapper (JAVA-458)
+- [bug] Ignore synthetic fields in mapper (JAVA-465)
+- [improvement] Throw an exception when DCAwareRoundRobinPolicy is built with
+  an explicit but null or empty local datacenter (JAVA-451)
+- [improvement] Add backwards-compatible DataType.serialize methods (JAVA-469)
+- [bug] Handle null enum fields in object mapper (JAVA-487)
+- [bug] Handle null UDT fields in object mapper (JAVA-499)
+
+Merged from 2.0 branch:
+
+- [bug] Handle null pool in PooledConnection.release (JAVA-449)
+- [improvement] Defunct connection on request timeout (JAVA-425)
+- [improvement] Try next host when we get a SERVER_ERROR (JAVA-426)
+- [bug] Handle race between query timeout and completion (JAVA-449, JAVA-460, JAVA-471)
+- [bug] Fix DCAwareRoundRobinPolicy datacenter auto-discovery (JAVA-496)
+
+
+2.1.1:
+------
+
+- [new] Support for new "frozen" keyword (JAVA-441)
+
+Merged from 2.0 branch:
+
+- [bug] Check cluster name when connecting to a new node (JAVA-397)
+- [bug] Add missing CAS delete support in QueryBuilder (JAVA-326)
+- [bug] Add collection and data length checks during serialization (JAVA-363)
+- [improvement] Surface number of retries in metrics (JAVA-329)
+- [bug] Do not use a host when no rpc_address found for it (JAVA-428)
+- [improvement] Add ResultSet.wasApplied() for conditional queries (JAVA-358)
+- [bug] Fix negative HostConnectionPool open count (JAVA-349)
+- [improvement] Log more connection details at trace and debug levels (JAVA-436)
+- [bug] Fix cluster shutdown (JAVA-445)
+
+
+2.1.0:
+------
+
+- [bug] ClusteringColumn annotation not working with specified ordering (JAVA-408)
+- [improvement] Fail BoundStatement if null values are not set explicitly (JAVA-410)
+- [bug] Handle UDT and tuples in BuiltStatement.toString (JAVA-416)
+
+Merged from 2.0 branch:
+
+- [bug] Release connections on ResultSetFuture#cancel (JAVA-407)
+- [bug] Fix handling of SimpleStatement with values in query builder
+  batches (JAVA-393)
+- [bug] Ensure pool is properly closed in onDown (JAVA-417)
+- [bug] Fix tokenMap initialization at startup (JAVA-415)
+- [bug] Avoid deadlock on close (JAVA-418)
+
+
+2.1.0-rc1:
+----------
+
+Merged from 2.0 branch:
+
+- [bug] Ensure defunct connections are completely closed (JAVA-394)
+- [bug] Fix memory and resource leak on closed Sessions (JAVA-342, JAVA-390)
+
+
+2.1.0-beta1:
+------------
+
+- [new] Support for User Defined Types and tuples
+- [new] Simple object mapper
+
+Merged from 2.0 branch: everything up to 2.0.3 (included), and the following.
+
+- [improvement] Better handling of dead connections (JAVA-204)
+- [bug] Fix potential NPE in ControlConnection (JAVA-373)
+- [bug] Throws NPE when passed null for a contact point (JAVA-291)
+- [bug] Avoid LoadBalancingPolicy onDown+onUp at startup (JAVA-315)
+- [bug] Avoid classloader leak in Tomcat (JAVA-343)
+- [bug] Avoid deadlock in onAdd/onUp (JAVA-387)
+- [bug] Make metadata parsing more lenient (JAVA-377, JAVA-391)
+
+
+2.0.9.2:
+--------
+
+- [bug] Fix edge cases where a connection was released twice (JAVA-651).
+- [bug] Fix edge cases in query cancellation (JAVA-653).
+
+
+2.0.9.1:
+--------
+
+- [bug] Prevent race between cancellation and query completion (JAVA-614)
+- [bug] Prevent cancel and timeout from cancelling unrelated ResponseHandler if
+  streamId was already released and reused (JAVA-632).
+- [bug] Fix issue when newly opened pool fails before we could mark the node UP
+  (JAVA-642)
+- [bug] Fix unwanted LBP notifications when a contact host is down (JAVA-613)
+
+
+2.0.9:
+------
+
+- [improvement] Shade Netty dependency (JAVA-538)
+- [improvement] Target schema refreshes more precisely (JAVA-543)
+- [bug] Don't check rpc_address for control host (JAVA-546)
+- [improvement] Improve message of NoHostAvailableException (JAVA-409)
+- [bug] Rework connection reaper to avoid deadlock (JAVA-556)
+- [bug] Avoid deadlock when multiple connections to the same host get write
+  errors (JAVA-557)
+- [improvement] Make shuffle=true the default for TokenAwarePolicy (JAVA-504)
+- [bug] Fix bug when SUSPECT reconnection succeeds, but one of the pooled
+  connections fails while bringing the node back up (JAVA-577)
+- [bug] Prevent faulty control connection from ignoring reconnecting hosts
+  (JAVA-587)
+- temporarily revert "Add idle timeout to the connection pool" (JAVA-419)
+- [bug] Ensure updateCreatedPools does not add pools for suspected hosts
+  (JAVA-593)
+- [bug] Ensure state change notifications for a given host are handled serially
+  (JAVA-594)
+- [bug] Ensure control connection reconnects when control host is removed
+  (JAVA-597)
+
+
+2.0.8:
+------
+
+- [bug] Fix token awareness for case-sensitive keyspaces and tables (JAVA-526)
+- [bug] Check maximum number of values passed to SimpleStatement (JAVA-515)
+- [improvement] Expose the driver version through the API (JAVA-532)
+- [improvement] Optimize session initialization when some hosts are not
+  responsive (JAVA-522)
+
+
+2.0.7:
+------
+
+- [bug] Handle null pool in PooledConnection.release (JAVA-449)
+- [improvement] Defunct connection on request timeout (JAVA-425)
+- [improvement] Try next host when we get a SERVER_ERROR (JAVA-426)
+- [bug] Handle race between query timeout and completion (JAVA-449, JAVA-460, JAVA-471)
+- [bug] Fix DCAwareRoundRobinPolicy datacenter auto-discovery (JAVA-496)
+- [bug] Ensure control connection does not trigger concurrent reconnects (JAVA-497)
+- [improvement] Keep trying to reconnect on authentication errors (JAVA-472)
+- [improvement] Expose close method on load balancing policy (JAVA-463)
+- [improvement] Allow load balancing policy to trigger refresh for a single host (JAVA-459)
+- [bug] Expose an API to cancel reconnection attempts (JAVA-493)
+- [bug] Fix NPE when a connection fails during pool construction (JAVA-503)
+- [improvement] Log datacenter name in DCAware policy's init when it is explicitly provided
+  (JAVA-423)
+- [improvement] Shuffle the replicas in TokenAwarePolicy.newQueryPlan (JAVA-504)
+- [improvement] Make schema agreement wait tuneable (JAVA-507)
+- [improvement] Document how to inject the driver metrics into another registry (JAVA-494)
+- [improvement] Add idle timeout to the connection pool (JAVA-419)
+- [bug] LatencyAwarePolicy does not shutdown executor on invocation of close (JAVA-516)
+- [improvement] Throw an exception when DCAwareRoundRobinPolicy is built with
+  an explicit but null or empty local datacenter (JAVA-451).
+- [bug] Fix check for local contact points in DCAware policy's init (JAVA-511)
+- [improvement] Make timeout on saturated pool customizable (JAVA-457)
+- [improvement] Downgrade Guava to 14.0.1 (JAVA-521)
+
+
+2.0.6:
+------
+
+- [bug] Check cluster name when connecting to a new node (JAVA-397)
+- [bug] Add missing CAS delete support in QueryBuilder (JAVA-326)
+- [bug] Add collection and data length checks during serialization (JAVA-363)
+- [improvement] Surface number of retries in metrics (JAVA-329)
+- [bug] Do not use a host when no rpc_address found for it (JAVA-428)
+- [improvement] Add ResultSet.wasApplied() for conditional queries (JAVA-358)
+- [bug] Fix negative HostConnectionPool open count (JAVA-349)
+- [improvement] Log more connection details at trace and debug levels (JAVA-436)
+- [bug] Fix cluster shutdown (JAVA-445)
+- [improvement] Expose child policy in chainable load balancing policies (JAVA-439)
+
+
+2.0.5:
+------
+
+- [bug] Release connections on ResultSetFuture#cancel (JAVA-407)
+- [bug] Fix handling of SimpleStatement with values in query builder
+  batches (JAVA-393)
+- [bug] Ensure pool is properly closed in onDown (JAVA-417)
+- [bug] Fix tokenMap initialization at startup (JAVA-415)
+- [bug] Avoid deadlock on close (JAVA-418)
+
+
 2.0.4:
 ------
 
@@ -11,6 +299,8 @@ CHANGELOG
 - [bug] Avoid classloader leak in Tomcat (JAVA-343)
 - [bug] Avoid deadlock in onAdd/onUp (JAVA-387)
 - [bug] Make metadata parsing more lenient (JAVA-377, JAVA-391)
+- [bug] Ensure defunct connections are completely closed (JAVA-394)
+- [bug] Fix memory and resource leak on closed Sessions (JAVA-342, JAVA-390)
 
 
 2.0.3:
@@ -28,6 +318,8 @@ CHANGELOG
   (JAVA-368)
 - [bug] Signal connection failure sooner to avoid missing them
   (JAVA-367)
+- [bug] Throw UnsupportedOperationException for protocol batch
+  setSerialCL (JAVA-337)
 
 Merged from 1.0 branch:
 

@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -138,7 +138,7 @@ public class ConsistencyTest extends AbstractPoliciesTest {
 
     @Test(groups = "long")
     public void testRFTwoTokenAware() throws Throwable {
-        Cluster.Builder builder = Cluster.builder().withLoadBalancingPolicy(new TokenAwarePolicy(new RoundRobinPolicy()));
+        Cluster.Builder builder = Cluster.builder().withLoadBalancingPolicy(new TokenAwarePolicy(new RoundRobinPolicy(), false));
         CCMBridge.CCMCluster c = CCMBridge.buildCluster(3, builder);
         try {
 
@@ -235,7 +235,7 @@ public class ConsistencyTest extends AbstractPoliciesTest {
 
     @Test(groups = "long")
     public void testRFThreeTokenAware() throws Throwable {
-        Cluster.Builder builder = Cluster.builder().withLoadBalancingPolicy(new TokenAwarePolicy(new RoundRobinPolicy()));
+        Cluster.Builder builder = Cluster.builder().withLoadBalancingPolicy(new TokenAwarePolicy(new RoundRobinPolicy(), false));
         CCMBridge.CCMCluster c = CCMBridge.buildCluster(3, builder);
         try {
 
@@ -424,7 +424,9 @@ public class ConsistencyTest extends AbstractPoliciesTest {
 
     @Test(groups = "long")
     public void testRFTwoDowngradingCL() throws Throwable {
-        Cluster.Builder builder = Cluster.builder().withLoadBalancingPolicy(new TokenAwarePolicy(new RoundRobinPolicy())).withRetryPolicy(DowngradingConsistencyRetryPolicy.INSTANCE);
+        Cluster.Builder builder = Cluster.builder()
+            .withLoadBalancingPolicy(new TokenAwarePolicy(new RoundRobinPolicy(), false))
+            .withRetryPolicy(DowngradingConsistencyRetryPolicy.INSTANCE);
         CCMBridge.CCMCluster c = CCMBridge.buildCluster(3, builder);
         try {
 
@@ -483,7 +485,9 @@ public class ConsistencyTest extends AbstractPoliciesTest {
 
     @Test(groups = "long")
     public void testRFThreeTokenAwareDowngradingCL() throws Throwable {
-        Cluster.Builder builder = Cluster.builder().withLoadBalancingPolicy(new TokenAwarePolicy(new RoundRobinPolicy())).withRetryPolicy(DowngradingConsistencyRetryPolicy.INSTANCE);
+        Cluster.Builder builder = Cluster.builder()
+            .withLoadBalancingPolicy(new TokenAwarePolicy(new RoundRobinPolicy(), false))
+            .withRetryPolicy(DowngradingConsistencyRetryPolicy.INSTANCE);
         testRFThreeDowngradingCL(builder);
     }
 
@@ -549,7 +553,9 @@ public class ConsistencyTest extends AbstractPoliciesTest {
 
     @Test(groups = "long")
     public void testRFThreeDowngradingCLTwoDCs() throws Throwable {
-        Cluster.Builder builder = Cluster.builder().withLoadBalancingPolicy(new TokenAwarePolicy(new RoundRobinPolicy())).withRetryPolicy(DowngradingConsistencyRetryPolicy.INSTANCE);
+        Cluster.Builder builder = Cluster.builder()
+            .withLoadBalancingPolicy(new TokenAwarePolicy(new RoundRobinPolicy(), false))
+            .withRetryPolicy(DowngradingConsistencyRetryPolicy.INSTANCE);
         CCMBridge.CCMCluster c = CCMBridge.buildCluster(3, 3, builder);
         try {
 
@@ -558,16 +564,16 @@ public class ConsistencyTest extends AbstractPoliciesTest {
             query(c, 12, ConsistencyLevel.TWO);
 
             assertQueried(CCMBridge.IP_PREFIX + '1', 0);
-            assertQueried(CCMBridge.IP_PREFIX + '2', 0);
-            assertQueried(CCMBridge.IP_PREFIX + '3', 12);
+            assertQueried(CCMBridge.IP_PREFIX + '2', 12);
+            assertQueried(CCMBridge.IP_PREFIX + '3', 0);
             assertQueried(CCMBridge.IP_PREFIX + '4', 0);
             assertQueried(CCMBridge.IP_PREFIX + '5', 0);
             assertQueried(CCMBridge.IP_PREFIX + '6', 0);
 
             resetCoordinators();
-            logger.info("Stopping node 2...");
-            stopAndWait(c, 2);
-            logger.info("Node 2 stopped.");
+            logger.info("Stopping node 3...");
+            stopAndWait(c, 3);
+            logger.info("Node 3 stopped.");
 
             List<ConsistencyLevel> acceptedList = Arrays.asList(
                                                     ConsistencyLevel.ANY,
@@ -646,7 +652,9 @@ public class ConsistencyTest extends AbstractPoliciesTest {
 
     @Test(groups = "long")
     public void testRFThreeDowngradingCLTwoDCsDCAware() throws Throwable {
-        Cluster.Builder builder = Cluster.builder().withLoadBalancingPolicy(new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc2"))).withRetryPolicy(DowngradingConsistencyRetryPolicy.INSTANCE);
+        Cluster.Builder builder = Cluster.builder()
+            .withLoadBalancingPolicy(new TokenAwarePolicy(new DCAwareRoundRobinPolicy("dc2"), false))
+            .withRetryPolicy(DowngradingConsistencyRetryPolicy.INSTANCE);
         CCMBridge.CCMCluster c = CCMBridge.buildCluster(3, 3, builder);
         try {
 
@@ -657,8 +665,8 @@ public class ConsistencyTest extends AbstractPoliciesTest {
             assertQueried(CCMBridge.IP_PREFIX + '1', 0);
             assertQueried(CCMBridge.IP_PREFIX + '2', 0);
             assertQueried(CCMBridge.IP_PREFIX + '3', 0);
-            assertQueried(CCMBridge.IP_PREFIX + '4', 12);
-            assertQueried(CCMBridge.IP_PREFIX + '5', 0);
+            assertQueried(CCMBridge.IP_PREFIX + '4', 0);
+            assertQueried(CCMBridge.IP_PREFIX + '5', 12);
             assertQueried(CCMBridge.IP_PREFIX + '6', 0);
 
             resetCoordinators();

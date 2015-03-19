@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -40,14 +40,19 @@ abstract class ArrayBackedResultSet implements ResultSet {
     private static final Queue<List<ByteBuffer>> EMPTY_QUEUE = new ArrayDeque<List<ByteBuffer>>(0);
 
     protected final ColumnDefinitions metadata;
-    protected final int protocolVersion;
+    protected final Token.Factory tokenFactory;
+    private final boolean wasApplied;
 
-    private ArrayBackedResultSet(ColumnDefinitions metadata, int protocolVersion) {
+    protected final ProtocolVersion protocolVersion;
+
+    private ArrayBackedResultSet(ColumnDefinitions metadata, Token.Factory tokenFactory, List<ByteBuffer> firstRow, ProtocolVersion protocolVersion) {
         this.metadata = metadata;
         this.protocolVersion = protocolVersion;
+        this.tokenFactory = tokenFactory;
+        this.wasApplied = checkWasApplied(firstRow, metadata);
     }
 
-    static ArrayBackedResultSet fromMessage(Responses.Result msg, SessionManager session, int protocolVersion, ExecutionInfo info, Statement statement) {
+    static ArrayBackedResultSet fromMessage(Responses.Result msg, SessionManager session, ProtocolVersion protocolVersion, ExecutionInfo info, Statement statement) {
         info = update(info, msg, session);
 
         switch (msg.kind) {
@@ -65,12 +70,15 @@ abstract class ArrayBackedResultSet implements ResultSet {
                     columnDefs = r.metadata.columns;
                 }
 
+                Token.Factory tokenFactory = (session == null) ? null
+                    : session.getCluster().getMetadata().tokenFactory();
+
                 // info can be null only for internal calls, but we don't page those. We assert
                 // this explicitly because MultiPage implementation don't support info == null.
                 assert r.metadata.pagingState == null || info != null;
                 return r.metadata.pagingState == null
-                     ? new SinglePage(columnDefs, protocolVersion, r.data, info)
-                     : new MultiPage(columnDefs, protocolVersion, r.data, info, r.metadata.pagingState, session, statement);
+                    ? new SinglePage(columnDefs, tokenFactory, protocolVersion, r.data, info)
+                    : new MultiPage(columnDefs, tokenFactory, protocolVersion, r.data, info, r.metadata.pagingState, session, statement);
 
             case SET_KEYSPACE:
             case SCHEMA_CHANGE:
@@ -89,8 +97,8 @@ abstract class ArrayBackedResultSet implements ResultSet {
     }
 
     private static ArrayBackedResultSet empty(ExecutionInfo info) {
-        // We could pass the protocol version but we know we won't need it so passing a bogus value (-1)
-        return new SinglePage(ColumnDefinitions.EMPTY, -1, EMPTY_QUEUE, info);
+        // We could pass the protocol version but we know we won't need it so passing a bogus value (null)
+        return new SinglePage(ColumnDefinitions.EMPTY, null,  null, EMPTY_QUEUE, info);
     }
 
     public ColumnDefinitions getColumnDefinitions() {
@@ -131,6 +139,11 @@ abstract class ArrayBackedResultSet implements ResultSet {
     }
 
     @Override
+    public boolean wasApplied() {
+        return wasApplied;
+    }
+
+    @Override
     public String toString() {
         StringBuilder sb = new StringBuilder();
         sb.append("ResultSet[ exhausted: ").append(isExhausted());
@@ -144,10 +157,11 @@ abstract class ArrayBackedResultSet implements ResultSet {
         private final ExecutionInfo info;
 
         private SinglePage(ColumnDefinitions metadata,
-                           int protocolVersion,
+                           Token.Factory tokenFactory,
+                           ProtocolVersion protocolVersion,
                            Queue<List<ByteBuffer>> rows,
                            ExecutionInfo info) {
-            super(metadata, protocolVersion);
+            super(metadata, tokenFactory, rows.peek(), protocolVersion);
             this.info = info;
             this.rows = rows;
         }
@@ -157,7 +171,7 @@ abstract class ArrayBackedResultSet implements ResultSet {
         }
 
         public Row one() {
-            return ArrayBackedRow.fromData(metadata, protocolVersion, rows.poll());
+            return ArrayBackedRow.fromData(metadata, tokenFactory, protocolVersion, rows.poll());
         }
 
         public int getAvailableWithoutFetching() {
@@ -207,14 +221,18 @@ abstract class ArrayBackedResultSet implements ResultSet {
         private final Statement statement;
 
         private MultiPage(ColumnDefinitions metadata,
-                          int protocolVersion,
+                          Token.Factory tokenFactory,
+                          ProtocolVersion protocolVersion,
                           Queue<List<ByteBuffer>> rows,
                           ExecutionInfo info,
                           ByteBuffer pagingState,
                           SessionManager session,
                           Statement statement) {
 
-            super(metadata, protocolVersion);
+            // Note: as of Cassandra 2.1.0, it turns out that the result of a CAS update is never paged, so
+            // we could hard-code the result of wasApplied in this class to "true". However, we can not be sure
+            // that this will never change, so apply the generic check by peeking at the first row.
+            super(metadata, tokenFactory, rows.peek(), protocolVersion);
             this.currentPage = rows;
             this.infos.offer(info);
 
@@ -230,7 +248,7 @@ abstract class ArrayBackedResultSet implements ResultSet {
 
         public Row one() {
             prepareNextRow();
-            return ArrayBackedRow.fromData(metadata, protocolVersion, currentPage.poll());
+            return ArrayBackedRow.fromData(metadata, tokenFactory, protocolVersion, currentPage.poll());
         }
 
         public int getAvailableWithoutFetching() {
@@ -346,21 +364,27 @@ abstract class ArrayBackedResultSet implements ResultSet {
 
                 // This is only called for internal calls, so don't bother with ExecutionInfo
                 @Override
-                public void onSet(Connection connection, Message.Response response, long latency) {
+                public void onSet(Connection connection, Message.Response response, long latency, int retryCount) {
                     onSet(connection, response, null, null, latency);
                 }
 
                 @Override
-                public void onException(Connection connection, Exception exception, long latency) {
+                public void onException(Connection connection, Exception exception, long latency, int retryCount) {
                     future.setException(exception);
                 }
 
                 @Override
-                public void onTimeout(Connection connection, long latency) {
+                public boolean onTimeout(Connection connection, long latency, int retryCount) {
                     // This won't be called directly since this will be wrapped by RequestHandler.
                     throw new UnsupportedOperationException();
                 }
 
+                @Override
+                public int retryCount() {
+                    // This is only called for internal calls (i.e, when the callback is not wrapped in RequestHandler).
+                    // There is no retry logic in that case, so the value does not really matter.
+                    return 0;
+                }
             }, statement);
 
             return future;
@@ -384,5 +408,27 @@ abstract class ArrayBackedResultSet implements ResultSet {
                 this.inProgress = inProgress;
             }
         }
+    }
+
+    // This method checks the value of the "[applied]" column manually, to avoid instantiating an ArrayBackedRow
+    // object that we would throw away immediately.
+    private static boolean checkWasApplied(List<ByteBuffer> firstRow, ColumnDefinitions metadata) {
+        // If the column is not present or not a boolean, we assume the query
+        // was not a conditional statement, and therefore return true.
+        if (firstRow == null)
+            return true;
+        int[] is = metadata.findAllIdx("[applied]");
+        if (is == null)
+            return true;
+        int i = is[0];
+        if (!DataType.cboolean().equals(metadata.getType(i)))
+            return true;
+
+        // Otherwise return the value of the column
+        ByteBuffer value = firstRow.get(i);
+        if (value == null || value.remaining() == 0)
+            return false;
+
+        return TypeCodec.BooleanCodec.instance.deserializeNoBoxing(value);
     }
 }

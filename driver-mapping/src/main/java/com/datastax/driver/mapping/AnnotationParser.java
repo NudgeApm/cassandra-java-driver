@@ -1,20 +1,35 @@
+/*
+ *      Copyright (C) 2012-2014 DataStax Inc.
+ *
+ *   Licensed under the Apache License, Version 2.0 (the "License");
+ *   you may not use this file except in compliance with the License.
+ *   You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ */
 package com.datastax.driver.mapping;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
-import java.util.*;
+import java.lang.reflect.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+
+import com.google.common.base.Strings;
 
 import com.datastax.driver.core.ConsistencyLevel;
-
-import com.datastax.driver.mapping.MethodMapper.ParamMapper;
-import com.datastax.driver.mapping.MethodMapper.UDTListParamMapper;
-import com.datastax.driver.mapping.MethodMapper.UDTMapParamMapper;
-import com.datastax.driver.mapping.MethodMapper.UDTParamMapper;
-import com.datastax.driver.mapping.MethodMapper.UDTSetParamMapper;
 import com.datastax.driver.mapping.MethodMapper.EnumParamMapper;
+import com.datastax.driver.mapping.MethodMapper.NestedUDTParamMapper;
+import com.datastax.driver.mapping.MethodMapper.ParamMapper;
+import com.datastax.driver.mapping.MethodMapper.UDTParamMapper;
 import com.datastax.driver.mapping.annotations.*;
 
 /**
@@ -24,20 +39,30 @@ class AnnotationParser {
 
     private static final Comparator<Field> fieldComparator = new Comparator<Field>() {
         public int compare(Field f1, Field f2) {
-            return position(f2) - position(f1);
+            return position(f1) - position(f2);
         }
     };
 
     private AnnotationParser() {}
 
     public static <T> EntityMapper<T> parseEntity(Class<T> entityClass, EntityMapper.Factory factory, MappingManager mappingManager) {
-        Table table = getTypeAnnotation(Table.class, entityClass);
+        Table table = AnnotationChecks.getTypeAnnotation(Table.class, entityClass);
 
         String ksName = table.caseSensitiveKeyspace() ? table.keyspace() : table.keyspace().toLowerCase();
         String tableName = table.caseSensitiveTable() ? table.name() : table.name().toLowerCase();
 
         ConsistencyLevel writeConsistency = table.writeConsistency().isEmpty() ? null : ConsistencyLevel.valueOf(table.writeConsistency().toUpperCase());
         ConsistencyLevel readConsistency = table.readConsistency().isEmpty() ? null : ConsistencyLevel.valueOf(table.readConsistency().toUpperCase());
+
+        if (Strings.isNullOrEmpty(table.keyspace())) {
+            ksName = mappingManager.getSession().getLoggedKeyspace();
+            if (Strings.isNullOrEmpty(ksName))
+                throw new IllegalArgumentException(String.format(
+                    "Error creating mapper for class %s, the @%s annotation declares no default keyspace, and the session is not currently logged to any keyspace",
+                    entityClass.getSimpleName(),
+                    Table.class.getSimpleName()
+                ));
+        }
 
         EntityMapper<T> mapper = factory.create(entityClass, ksName, tableName, writeConsistency, readConsistency);
 
@@ -46,8 +71,12 @@ class AnnotationParser {
         List<Field> rgs = new ArrayList<Field>();
 
         for (Field field : entityClass.getDeclaredFields()) {
-            validateAnnotations(field, "entity",
-                                Column.class, ClusteringColumn.class, Enumerated.class, PartitionKey.class, Transient.class);
+            if(field.isSynthetic() || (field.getModifiers() & Modifier.STATIC) == Modifier.STATIC)
+                continue;
+            
+            AnnotationChecks.validateAnnotations(field, "entity",
+                                                 Column.class, ClusteringColumn.class, Enumerated.class, Frozen.class, FrozenKey.class,
+                                                 FrozenValue.class, PartitionKey.class, Transient.class);
 
             if (field.getAnnotation(Transient.class) != null)
                 continue;
@@ -78,18 +107,32 @@ class AnnotationParser {
     }
 
     public static <T> EntityMapper<T> parseUDT(Class<T> udtClass, EntityMapper.Factory factory, MappingManager mappingManager) {
-        UDT udt = getTypeAnnotation(UDT.class, udtClass);
+        UDT udt = AnnotationChecks.getTypeAnnotation(UDT.class, udtClass);
 
         String ksName = udt.caseSensitiveKeyspace() ? udt.keyspace() : udt.keyspace().toLowerCase();
         String udtName = udt.caseSensitiveType() ? udt.name() : udt.name().toLowerCase();
+
+        if (Strings.isNullOrEmpty(udt.keyspace())) {
+            ksName = mappingManager.getSession().getLoggedKeyspace();
+            if (Strings.isNullOrEmpty(ksName))
+                throw new IllegalArgumentException(String.format(
+                    "Error creating UDT mapper for class %s, the @%s annotation declares no default keyspace, and the session is not currently logged to any keyspace",
+                    udtClass.getSimpleName(),
+                    UDT.class.getSimpleName()
+                ));
+        }
 
         EntityMapper<T> mapper = factory.create(udtClass, ksName, udtName, null, null);
 
         List<Field> columns = new ArrayList<Field>();
 
         for (Field field : udtClass.getDeclaredFields()) {
-            validateAnnotations(field, "UDT",
-                                com.datastax.driver.mapping.annotations.Field.class, Enumerated.class, Transient.class);
+            if(field.isSynthetic() || (field.getModifiers() & Modifier.STATIC) == Modifier.STATIC)
+                continue;
+            
+            AnnotationChecks.validateAnnotations(field, "UDT",
+                                                 com.datastax.driver.mapping.annotations.Field.class, Frozen.class, FrozenKey.class,
+                                                 FrozenValue.class, Enumerated.class, Transient.class);
 
             if (field.getAnnotation(Transient.class) != null)
                 continue;
@@ -121,11 +164,11 @@ class AnnotationParser {
 
     private static void validateOrder(List<Field> fields, String annotation) {
         for (int i = 0; i < fields.size(); i++) {
-            int pos = position(fields.get(i));
-            if (pos < i)
-                throw new IllegalArgumentException("Missing ordering value " + i + " for " + annotation + " annotation");
-            else if (pos > i)
-                throw new IllegalArgumentException("Duplicate ordering value " + i + " for " + annotation + " annotation");
+            Field field = fields.get(i);
+            int pos = position(field);
+            if (pos != i)
+                throw new IllegalArgumentException(String.format("Invalid ordering value %d for annotation %s of column %s, was expecting %d",
+                                                                 pos, annotation, field.getName(), i));
         }
     }
 
@@ -162,23 +205,23 @@ class AnnotationParser {
 
     public static String columnName(Field field) {
         Column column = field.getAnnotation(Column.class);
-        if (column != null) {
+        if (column != null && !column.name().isEmpty()) {
             return column.caseSensitive() ? column.name() : column.name().toLowerCase();
         }
 
         com.datastax.driver.mapping.annotations.Field udtField = field.getAnnotation(com.datastax.driver.mapping.annotations.Field.class);
-        if (udtField != null) {
+        if (udtField != null && !udtField.name().isEmpty()) {
             return udtField.caseSensitive() ? udtField.name() : udtField.name().toLowerCase();
         }
 
-        return field.getName();
+        return field.getName().toLowerCase();
     }
 
     public static <T> AccessorMapper<T> parseAccessor(Class<T> accClass, AccessorMapper.Factory factory, MappingManager mappingManager) {
         if (!accClass.isInterface())
             throw new IllegalArgumentException("@Accessor annotation is only allowed on interfaces");
 
-        getTypeAnnotation(Accessor.class, accClass);
+        AnnotationChecks.getTypeAnnotation(Accessor.class, accClass);
 
         List<MethodMapper> methods = new ArrayList<MethodMapper>();
         for (Method m : accClass.getDeclaredMethods()) {
@@ -243,80 +286,16 @@ class AnnotationParser {
             }
             return new ParamMapper(paramName, idx);
         } if (paramType instanceof ParameterizedType) {
-            ParameterizedType pt = (ParameterizedType) paramType;
-            Type raw = pt.getRawType();
-            if (!(raw instanceof Class))
-                throw new IllegalArgumentException(String.format("Cannot map class %s for parameter %s of %s.%s", paramType, paramName, className, methodName));
-            Class<?> klass = (Class<?>)raw;
-            Class<?> firstTypeParam = ReflectionUtils.getParam(pt, 0, paramName);
-            if (List.class.isAssignableFrom(klass) && firstTypeParam.isAnnotationPresent(UDT.class)) {
-                UDTMapper<?> valueMapper = mappingManager.getUDTMapper(firstTypeParam);
-                return new UDTListParamMapper(paramName, idx, valueMapper);
+            InferredCQLType inferredCQLType = InferredCQLType.from(className, methodName, idx, paramName, paramType, mappingManager);
+            if (inferredCQLType.containsMappedUDT) {
+                // We need a specialized mapper to convert UDT instances in the hierarchy.
+                return new NestedUDTParamMapper(paramName, idx, inferredCQLType);
+            } else {
+                // Use the default mapper but provide the extracted type
+                return new ParamMapper(paramName, idx, inferredCQLType.dataType);
             }
-            if (Set.class.isAssignableFrom(klass) && firstTypeParam.isAnnotationPresent(UDT.class)) {
-                UDTMapper<?> valueMapper = mappingManager.getUDTMapper(firstTypeParam);
-                return new UDTSetParamMapper(paramName, idx, valueMapper);
-            }
-            if (Map.class.isAssignableFrom(klass)) {
-                Class<?> secondTypeParam = ReflectionUtils.getParam(pt, 1, paramName);
-                UDTMapper<?> keyMapper = firstTypeParam.isAnnotationPresent(UDT.class) ? mappingManager.getUDTMapper(firstTypeParam) : null;
-                UDTMapper<?> valueMapper = secondTypeParam.isAnnotationPresent(UDT.class) ? mappingManager.getUDTMapper(secondTypeParam) : null;
-                if (keyMapper != null || valueMapper != null) {
-                    return new UDTMapParamMapper(paramName, idx, keyMapper, valueMapper);
-                }
-            }
-            return new ParamMapper(paramName, idx);
         } else {
             throw new IllegalArgumentException(String.format("Cannot map class %s for parameter %s of %s.%s", paramType, paramName, className, methodName));
         }
-    }
-
-    private static <T extends Annotation> T getTypeAnnotation(Class<T> annotation, Class<?> annotatedClass) {
-        T instance = annotatedClass.getAnnotation(annotation);
-        if (instance == null)
-            throw new IllegalArgumentException(String.format("@%s annotation was not found on type %s",
-                                                             annotation.getSimpleName(), annotatedClass.getName()));
-
-        // Check that no other mapping annotations are present
-        validateAnnotations(annotatedClass, annotation);
-
-        return instance;
-    }
-
-    private static void validateAnnotations(Class<?> clazz, Class<? extends Annotation> allowed) {
-        @SuppressWarnings("unchecked")
-        Class<? extends Annotation> invalid = validateAnnotations(clazz.getAnnotations(), allowed);
-        if (invalid != null)
-            throw new IllegalArgumentException(String.format("Cannot have both @%s and @%s on type %s",
-                                                             allowed.getSimpleName(), invalid.getSimpleName(),
-                                                             clazz.getName()));
-    }
-
-    private static void validateAnnotations(Field field, String classDescription, Class<? extends Annotation>... allowed) {
-        Class<? extends Annotation> invalid = validateAnnotations(field.getAnnotations(), allowed);
-        if (invalid != null)
-            throw new IllegalArgumentException(String.format("Annotation @%s is not allowed on field %s of %s %s",
-                                                             invalid.getSimpleName(),
-                                                             field.getName(), classDescription,
-                                                             field.getDeclaringClass().getName()));
-    }
-
-    private static final Package MAPPING_PACKAGE = Table.class.getPackage();
-
-    // Returns the offending annotation if there is one
-    private static Class<? extends Annotation> validateAnnotations(Annotation[] annotations, Class<? extends Annotation>... allowed) {
-        for (Annotation annotation : annotations) {
-            Class<? extends Annotation> actual = annotation.annotationType();
-            if (actual.getPackage().equals(MAPPING_PACKAGE) && !contains(allowed, actual))
-                return actual;
-        }
-        return null;
-    }
-
-    private static boolean contains(Object[] array, Object target) {
-        for (Object element : array)
-            if (element.equals(target))
-                return true;
-        return false;
     }
 }

@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -40,7 +40,7 @@ public class DefaultPreparedStatement implements PreparedStatement{
         this.queryKeyspace = queryKeyspace;
     }
 
-    static DefaultPreparedStatement fromMessage(Responses.Result.Prepared msg, Metadata clusterMetadata, int protocolVersion, String query, String queryKeyspace) {
+    static DefaultPreparedStatement fromMessage(Responses.Result.Prepared msg, Metadata clusterMetadata, ProtocolVersion protocolVersion, String query, String queryKeyspace) {
         assert msg.metadata.columns != null;
 
         ColumnDefinitions defs = msg.metadata.columns;
@@ -50,9 +50,9 @@ public class DefaultPreparedStatement implements PreparedStatement{
 
         List<ColumnMetadata> partitionKeyColumns = null;
         int[] pkIndexes = null;
-        KeyspaceMetadata km = clusterMetadata.getKeyspace(defs.getKeyspace(0));
+        KeyspaceMetadata km = clusterMetadata.getKeyspace(Metadata.quote(defs.getKeyspace(0)));
         if (km != null) {
-            TableMetadata tm = km.getTable(defs.getTable(0));
+            TableMetadata tm = km.getTable(Metadata.quote(defs.getTable(0)));
             if (tm != null) {
                 partitionKeyColumns = tm.getPartitionKey();
                 pkIndexes = new int[partitionKeyColumns.size()];

@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -21,6 +21,8 @@ import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.*;
 
+import com.google.common.reflect.TypeToken;
+
 import com.datastax.driver.core.exceptions.InvalidTypeException;
 
 /**
@@ -36,15 +38,21 @@ import com.datastax.driver.core.exceptions.InvalidTypeException;
  * variables have the same name, setting that name will set <b>all</b> the
  * variables for that name.
  * <p>
- * Any variable that hasn't been specifically set will be considered {@code null}.
+ * All the variables of the statement must be bound. If you don't explicitly
+ * set a value for a variable, an {@code IllegalStateException} will be
+ * thrown when submitting the statement. If you want to set a variable to
+ * {@code null}, use {@link #setToNull(int) setToNull}.
  */
 public class BoundStatement extends Statement implements SettableData<BoundStatement>, GettableData {
+    private static final ByteBuffer UNSET = ByteBuffer.allocate(0);
 
     final PreparedStatement statement;
 
     // Statement is already an abstract class, so we can't make it extend AbstractData directly. But
     // we still want to avoid duplicating too much code so we wrap.
     final DataWrapper wrapper;
+
+    private ByteBuffer routingKey;
 
     /**
      * Creates a new {@code BoundStatement} from the provided prepared
@@ -54,6 +62,9 @@ public class BoundStatement extends Statement implements SettableData<BoundState
     public BoundStatement(PreparedStatement statement) {
         this.statement = statement;
         this.wrapper = new DataWrapper(this, statement.getVariables().size());
+        for (int i = 0; i < wrapper.values.length; i++) {
+            wrapper.values[i] = UNSET;
+        }
 
         if (statement.getConsistencyLevel() != null)
             this.setConsistencyLevel(statement.getConsistencyLevel());
@@ -75,20 +86,20 @@ public class BoundStatement extends Statement implements SettableData<BoundState
     }
 
     /**
-     * Returns whether the {@code i}th variable has been bound to a non null value.
+     * Returns whether the {@code i}th variable has been bound.
      *
      * @param i the index of the variable to check.
-     * @return whether the {@code i}th variable has been bound to a non null value.
+     * @return whether the {@code i}th variable has been bound.
      *
      * @throws IndexOutOfBoundsException if {@code i < 0 || i >= this.preparedStatement().variables().size()}.
      */
     public boolean isSet(int i) {
-        return wrapper.isNull(i);
+        return wrapper.getValue(i) != UNSET;
     }
 
     /**
      * Returns whether the first occurrence of variable {@code name} has been
-     * bound to a non-null value.
+     * bound.
      *
      * @param name the name of the variable to check.
      * @return whether the first occurrence of variable {@code name} has been
@@ -98,7 +109,7 @@ public class BoundStatement extends Statement implements SettableData<BoundState
      * variable, that is if {@code !this.preparedStatement().variables().names().contains(name)}.
      */
     public boolean isSet(String name) {
-        return wrapper.isNull(name);
+        return wrapper.getValue(wrapper.getIndexOf(name)) != UNSET;
     }
 
     /**
@@ -186,6 +197,9 @@ public class BoundStatement extends Statement implements SettableData<BoundState
                     }
                     break;
                 default:
+                    if (toSet instanceof Token)
+                        toSet = ((Token)toSet).getValue();
+
                     Class<?> providedClass = toSet.getClass();
                     Class<?> expectedClass = columnType.getName().javaType;
                     if (!expectedClass.isAssignableFrom(providedClass))
@@ -198,27 +212,51 @@ public class BoundStatement extends Statement implements SettableData<BoundState
     }
 
     /**
+     * Sets the routing key for this bound statement.
+     * <p>
+     * This is useful when the routing key can neither be set on the {@code PreparedStatement} this bound statement
+     * was built from, nor automatically computed from bound variables. In particular, this is the case if the
+     * partition key is composite and only some of its components are bound.
+     *
+     * @param routingKey the raw (binary) value to use as routing key.
+     * @return this {@code BoundStatement} object.
+     *
+     * @see BoundStatement#getRoutingKey
+     */
+    public BoundStatement setRoutingKey(ByteBuffer routingKey) {
+        this.routingKey = routingKey;
+        return this;
+    }
+
+    /**
      * The routing key for this bound query.
      * <p>
      * This method will return a non-{@code null} value if either of the following occur:
      * <ul>
-     *   <li>All the columns composing the partition key are bound
-     *   variables of this {@code BoundStatement}. The routing key will then be
-     *   built using the values provided for these partition key columns.</li>
-     *   <li>The routing key has been set through {@link PreparedStatement#setRoutingKey}
-     *   for the {@code PreparedStatement} this statement has been built from.</li>
+     * <li>The routing key has been set directly through {@link BoundStatement#setRoutingKey}.</li>
+     * <li>The routing key has been set through {@link PreparedStatement#setRoutingKey} for the
+     * {@code PreparedStatement} this statement has been built from.</li>
+     * <li>All the columns composing the partition key are bound variables of this {@code BoundStatement}. The routing
+     * key will then be built using the values provided for these partition key columns.</li>
      * </ul>
      * Otherwise, {@code null} is returned.
      * <p>
-     * Note that if the routing key has been set through {@link PreparedStatement#setRoutingKey},
-     * that latter value takes precedence even if the partition key is part of the bound variables.
+     *
+     * Note that if the routing key has been set through {@link BoundStatement#setRoutingKey}, then that takes
+     * precedence. If the routing key has been set through {@link PreparedStatement#setRoutingKey} then that is used
+     * next. If neither of those are set then it is computed.
      *
      * @return the routing key for this statement or {@code null}.
      */
     @Override
     public ByteBuffer getRoutingKey() {
-        if (statement.getRoutingKey() != null)
+        if (this.routingKey != null) {
+            return this.routingKey;
+        }
+
+        if (statement.getRoutingKey() != null) {
             return statement.getRoutingKey();
+        }
 
         int[] rkIndexes = statement.getPreparedId().routingKeyIndexes;
         if (rkIndexes != null) {
@@ -689,6 +727,87 @@ public class BoundStatement extends Statement implements SettableData<BoundState
     }
 
     /**
+     * Sets the {@code i}th value to the provided {@link Token}.
+     * <p>
+     * {@link #setPartitionKeyToken(Token)} should generally be preferred if you
+     * have a single token variable.
+     *
+     * @param i the index of the variable to set.
+     * @param v the value to set.
+     * @return this BoundStatement.
+     *
+     * @throws IndexOutOfBoundsException if {@code i < 0 || i >= this.preparedStatement().variables().size()}.
+     * @throws InvalidTypeException if column {@code i} is not of the type of the token's value.
+     */
+    public BoundStatement setToken(int i, Token v) {
+        return wrapper.setToken(i, v);
+    }
+
+    /**
+     * Sets the value for (all occurrences of) variable {@code name} to the
+     * provided token.
+     * <p>
+     * {@link #setPartitionKeyToken(Token)} should generally be preferred if you
+     * have a single token variable.
+     * <p>
+     * If you have multiple token variables, use positional binding ({@link #setToken(int, Token)},
+     * or named bind markers:
+     * <pre>
+     * {@code
+     * PreparedStatement pst = session.prepare("SELECT * FROM my_table WHERE token(k) > :min AND token(k) <= :max");
+     * BoundStatement b = pst.bind().setToken("min", minToken).setToken("max", maxToken);
+     * }
+     * </pre>
+     *
+     * @param name the name of the variable to set; if multiple variables
+     * {@code name} are prepared, all of them are set.
+     * @param v the value to set.
+     * @return this BoundStatement.
+     *
+     * @throws IllegalArgumentException if {@code name} is not a prepared
+     * variable, that is, if {@code !this.preparedStatement().variables().names().contains(name)}.
+     * @throws InvalidTypeException if (any occurrence of) {@code name} is
+     * not of the type of the token's value.
+     */
+    public BoundStatement setToken(String name, Token v) {
+        return wrapper.setToken(name, v);
+    }
+
+    /**
+     * Sets the value for (all occurrences of) variable "{@code partition key token}"
+     * to the provided token (this is the name generated by Cassandra for markers
+     * corresponding to a {@code token(...)} call).
+     * <p>
+     * This method is a shorthand for statements with a single token variable:
+     * <pre>
+     * {@code
+     * Token token = ...
+     * PreparedStatement pst = session.prepare("SELECT * FROM my_table WHERE token(k) = ?");
+     * BoundStatement b = pst.bind().setPartitionKeyToken(token);
+     * }
+     * </pre>
+     * If you have multiple token variables, use positional binding ({@link #setToken(int, Token)},
+     * or named bind markers:
+     * <pre>
+     * {@code
+     * PreparedStatement pst = session.prepare("SELECT * FROM my_table WHERE token(k) > :min AND token(k) <= :max");
+     * BoundStatement b = pst.bind().setToken("min", minToken).setToken("max", maxToken);
+     * }
+     * </pre>
+     *
+     * @param v the value to set.
+     * @return this BoundStatement.
+     *
+     * @throws IllegalArgumentException if {@code name} is not a prepared
+     * variable, that is, if {@code !this.preparedStatement().variables().names().contains(name)}.
+     * @throws InvalidTypeException if (any occurrence of) {@code name} is
+     * not of the type of the token's value.
+     */
+    public BoundStatement setPartitionKeyToken(Token v) {
+        return setToken("partition key token", v);
+    }
+
+    /**
      * Sets the {@code i}th value to the provided list.
      * <p>
      * Please note that {@code null} values are not supported inside collection by CQL.
@@ -889,6 +1008,33 @@ public class BoundStatement extends Statement implements SettableData<BoundState
      */
     public BoundStatement setTupleValue(String name, TupleValue v) {
         return wrapper.setTupleValue(name, v);
+    }
+
+    /**
+     * Sets the {@code i}th value to {@code null}.
+     * <p>
+     * This is mainly intended for CQL types which map to native Java types.
+     *
+     * @param i the index of the value to set.
+     * @return this object.
+     * @throws IndexOutOfBoundsException if {@code i} is not a valid index for this object.
+     */
+    public BoundStatement setToNull(int i) {
+        return wrapper.setToNull(i);
+    }
+
+    /**
+     * Sets the value for (all occurrences of) variable {@code name} to {@code null}.
+     * <p>
+     * This is mainly intended for CQL types which map to native Java types.
+     *
+     * @param name the name of the value to set; if {@code name} is present multiple
+     * times, all its values are set.
+     * @return this object.
+     * @throws IllegalArgumentException if {@code name} is not a valid name for this object.
+     */
+    public BoundStatement setToNull(String name) {
+        return wrapper.setToNull(name);
     }
 
     /**
@@ -1097,8 +1243,22 @@ public class BoundStatement extends Statement implements SettableData<BoundState
     /**
      * {@inheritDoc}
      */
+    public <T> List<T> getList(int i, TypeToken<T> elementsType) {
+        return wrapper.getList(i, elementsType);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     public <T> List<T> getList(String name, Class<T> elementsClass) {
         return wrapper.getList(name, elementsClass);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public <T> List<T> getList(String name, TypeToken<T> elementsType) {
+        return wrapper.getList(name, elementsType);
     }
 
     /**
@@ -1111,8 +1271,22 @@ public class BoundStatement extends Statement implements SettableData<BoundState
     /**
      * {@inheritDoc}
      */
+    public <T> Set<T> getSet(int i, TypeToken<T> elementsType) {
+        return wrapper.getSet(i, elementsType);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     public <T> Set<T> getSet(String name, Class<T> elementsClass) {
         return wrapper.getSet(name, elementsClass);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public <T> Set<T> getSet(String name, TypeToken<T> elementsType) {
+        return wrapper.getSet(name, elementsType);
     }
 
     /**
@@ -1125,8 +1299,22 @@ public class BoundStatement extends Statement implements SettableData<BoundState
     /**
      * {@inheritDoc}
      */
+    public <K, V> Map<K, V> getMap(int i, TypeToken<K> keysType, TypeToken<V> valuesType) {
+        return wrapper.getMap(i, keysType, valuesType);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
     public <K, V> Map<K, V> getMap(String name, Class<K> keysClass, Class<V> valuesClass) {
         return wrapper.getMap(name, keysClass, valuesClass);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    public <K, V> Map<K, V> getMap(String name, TypeToken<K> keysType, TypeToken<V> valuesType) {
+        return wrapper.getMap(name, keysType, valuesType);
     }
 
     /**
@@ -1173,6 +1361,16 @@ public class BoundStatement extends Statement implements SettableData<BoundState
 
         protected String getName(int i) {
             return wrapped.statement.getVariables().getName(i);
+        }
+    }
+
+    void ensureAllSet() {
+        int index = 0;
+        for (ByteBuffer value : wrapper.values) {
+             if (value == BoundStatement.UNSET)
+                throw new IllegalStateException("Unset value at index " + index + ". "
+                                                + "If you want this value to be null, please set it to null explicitly.");
+             index += 1;
         }
     }
 }

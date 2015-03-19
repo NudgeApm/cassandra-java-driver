@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -83,18 +83,23 @@ public class SimpleStatement extends RegularStatement {
      * by {@link DataType#asJavaClass}.
      */
     public SimpleStatement(String query, Object... values) {
+        if (values.length > 65535)
+            throw new IllegalArgumentException("Too many values, the maximum allowed is 65535");
         this.query = query;
         this.values = values;
     }
 
-    private static ByteBuffer[] convert(Object[] values, int protocolVersion) {
+    private static ByteBuffer[] convert(Object[] values, ProtocolVersion protocolVersion) {
         ByteBuffer[] serializedValues = new ByteBuffer[values.length];
         for (int i = 0; i < values.length; i++) {
+            Object value = values[i];
             try {
-                serializedValues[i] = DataType.serializeValue(values[i], protocolVersion);
+                if (value instanceof Token)
+                    value = ((Token)value).getValue();
+                serializedValues[i] = DataType.serializeValue(value, protocolVersion);
             } catch (IllegalArgumentException e) {
                 // Catch and rethrow to provide a more helpful error message (one that include which value is bad)
-                throw new IllegalArgumentException(String.format("Value %d of type %s does not correspond to any CQL3 type", i, values[i].getClass()));
+                throw new IllegalArgumentException(String.format("Value %d of type %s does not correspond to any CQL3 type", i, value.getClass()));
             }
         }
         return serializedValues;
@@ -111,8 +116,18 @@ public class SimpleStatement extends RegularStatement {
     }
 
     @Override
-    public ByteBuffer[] getValues(int protocolVersion) {
+    public ByteBuffer[] getValues(ProtocolVersion protocolVersion) {
         return values == null ? null : convert(values, protocolVersion);
+    }
+
+    /**
+     * The number of values for this statement, that is the size of the array
+     * that will be returned by {@code getValues}.
+     *
+     * @return the number of values.
+     */
+    public int valuesCount() {
+        return values == null ? 0 : values.length;
     }
 
     @Override

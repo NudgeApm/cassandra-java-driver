@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -20,11 +20,11 @@ import java.util.Collections;
 
 import org.testng.annotations.Test;
 
-import com.datastax.driver.core.exceptions.UnsupportedFeatureException;
-
-import static com.datastax.driver.core.TestUtils.versionCheck;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
+
+import com.datastax.driver.core.exceptions.UnsupportedFeatureException;
+import com.datastax.driver.core.utils.CassandraVersion;
 
 public class BatchStatementTest extends CCMBridge.PerClassSingleNodeCluster {
 
@@ -43,6 +43,8 @@ public class BatchStatementTest extends CCMBridge.PerClassSingleNodeCluster {
             batch.add(new SimpleStatement("INSERT INTO test (k, v) VALUES (?, ?)", "key1", 0));
             batch.add(st.bind("key1", 1));
             batch.add(st.bind("key2", 0));
+
+            assertEquals(3, batch.size());
 
             session.execute(batch);
 
@@ -69,7 +71,7 @@ public class BatchStatementTest extends CCMBridge.PerClassSingleNodeCluster {
 
         } catch (UnsupportedFeatureException e) {
             // This is expected when testing the protocol v1
-            if (cluster.getConfiguration().getProtocolOptions().getProtocolVersion() != 1)
+            if (cluster.getConfiguration().getProtocolOptions().getProtocolVersionEnum() != ProtocolVersion.V1)
                 throw e;
         } catch (Throwable t) {
             errorOut();
@@ -78,9 +80,8 @@ public class BatchStatementTest extends CCMBridge.PerClassSingleNodeCluster {
     }
 
     @Test(groups = "short")
+    @CassandraVersion(major=2.0, minor=9, description="This will only work with C* 2.0.9 (CASSANDRA-7337)")
     public void casBatchTest() throws Throwable {
-        versionCheck(2.0, 9, "This will only work with C* 2.0.9 (CASSANDRA-7337)");
-
         try {
             PreparedStatement st = session.prepare("INSERT INTO test (k, v) VALUES (?, ?) IF NOT EXISTS");
 
@@ -89,6 +90,8 @@ public class BatchStatementTest extends CCMBridge.PerClassSingleNodeCluster {
             batch.add(new SimpleStatement("INSERT INTO test (k, v) VALUES (?, ?)", "key1", 0));
             batch.add(st.bind("key1", 1));
             batch.add(st.bind("key1", 2));
+
+            assertEquals(3, batch.size());
 
             ResultSet rs = session.execute(batch);
             Row r = rs.one();
@@ -102,7 +105,7 @@ public class BatchStatementTest extends CCMBridge.PerClassSingleNodeCluster {
 
         } catch (UnsupportedFeatureException e) {
             // This is expected when testing the protocol v1
-            if (cluster.getConfiguration().getProtocolOptions().getProtocolVersion() != 1)
+            if (cluster.getConfiguration().getProtocolOptions().getProtocolVersionEnum() != ProtocolVersion.V1)
                 throw e;
         } catch (Throwable t) {
             errorOut();

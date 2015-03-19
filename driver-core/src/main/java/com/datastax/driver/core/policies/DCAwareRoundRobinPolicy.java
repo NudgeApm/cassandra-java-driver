@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -24,6 +24,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import com.google.common.base.Joiner;
+import com.google.common.base.Strings;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.AbstractIterator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,7 +53,7 @@ import com.datastax.driver.core.Statement;
  * incurs a slight overhead so the {@code LoadBalancingPolicy.RoundRobin}
  * policy could be preferred to this policy in that case.
  */
-public class DCAwareRoundRobinPolicy implements LoadBalancingPolicy {
+public class DCAwareRoundRobinPolicy implements LoadBalancingPolicy, CloseableLoadBalancingPolicy {
 
     private static final Logger logger = LoggerFactory.getLogger(DCAwareRoundRobinPolicy.class);
 
@@ -59,7 +62,8 @@ public class DCAwareRoundRobinPolicy implements LoadBalancingPolicy {
     private final ConcurrentMap<String, CopyOnWriteArrayList<Host>> perDcLiveHosts = new ConcurrentHashMap<String, CopyOnWriteArrayList<Host>>();
     private final AtomicInteger index = new AtomicInteger();
 
-    private volatile String localDc;
+    @VisibleForTesting
+    volatile String localDc;
 
     private final ConcurrentMap<String, CopyOnWriteArrayList<Host>> perDcSuspectedHosts = new ConcurrentHashMap<String, CopyOnWriteArrayList<Host>>();
 
@@ -83,7 +87,7 @@ public class DCAwareRoundRobinPolicy implements LoadBalancingPolicy {
      * and as such will ignore all hosts in remote data-centers.
      */
     public DCAwareRoundRobinPolicy() {
-        this(null);
+        this(null, 0, false, true);
     }
 
     /**
@@ -101,7 +105,7 @@ public class DCAwareRoundRobinPolicy implements LoadBalancingPolicy {
      * data-center of the first node connected to.
      */
     public DCAwareRoundRobinPolicy(String localDc) {
-        this(localDc, 0);
+        this(localDc, 0, false, false);
     }
 
     /**
@@ -133,7 +137,7 @@ public class DCAwareRoundRobinPolicy implements LoadBalancingPolicy {
      * connections to them will be maintained).
      */
     public DCAwareRoundRobinPolicy(String localDc, int usedHostsPerRemoteDc) {
-        this(localDc, usedHostsPerRemoteDc, false);
+        this(localDc, usedHostsPerRemoteDc, false, false);
     }
 
     /**
@@ -166,6 +170,12 @@ public class DCAwareRoundRobinPolicy implements LoadBalancingPolicy {
      * having consitency {@code LOCAL_ONE} and {@code LOCAL_QUORUM}.
      */
     public DCAwareRoundRobinPolicy(String localDc, int usedHostsPerRemoteDc, boolean allowRemoteDCsForLocalConsistencyLevel) {
+        this(localDc, usedHostsPerRemoteDc, allowRemoteDCsForLocalConsistencyLevel, false);
+    }
+
+    private DCAwareRoundRobinPolicy(String localDc, int usedHostsPerRemoteDc, boolean allowRemoteDCsForLocalConsistencyLevel, boolean allowEmptyLocalDc) {
+        if (!allowEmptyLocalDc && Strings.isNullOrEmpty(localDc))
+            throw new IllegalArgumentException("Null or empty data center specified for DC-aware policy");
         this.localDc = localDc == null ? UNSET : localDc;
         this.usedHostsPerRemoteDc = usedHostsPerRemoteDc;
         this.dontHopForLocalCL = !allowRemoteDCsForLocalConsistencyLevel;
@@ -173,7 +183,12 @@ public class DCAwareRoundRobinPolicy implements LoadBalancingPolicy {
 
     @Override
     public void init(Cluster cluster, Collection<Host> hosts) {
+        if (localDc != UNSET)
+            logger.info("Using provided data-center name '{}' for DCAwareRoundRobinPolicy", localDc);
+
         this.configuration = cluster.getConfiguration();
+
+        ArrayList<String> notInLocalDC = new ArrayList<String>();
 
         for (Host host : hosts) {
             String dc = dc(host);
@@ -182,13 +197,21 @@ public class DCAwareRoundRobinPolicy implements LoadBalancingPolicy {
             if (localDc == UNSET && dc != UNSET) {
                 logger.info("Using data-center name '{}' for DCAwareRoundRobinPolicy (if this is incorrect, please provide the correct datacenter name with DCAwareRoundRobinPolicy constructor)", dc);
                 localDc = dc;
-            }
+            } else if (!dc.equals(localDc))
+                notInLocalDC.add(String.format("%s (%s)", host.toString(), dc));
+
+            if (!dc.equals(localDc)) notInLocalDC.add(String.format("%s (%s)", host.toString(), host.getDatacenter()));
 
             CopyOnWriteArrayList<Host> prev = perDcLiveHosts.get(dc);
             if (prev == null)
                 perDcLiveHosts.put(dc, new CopyOnWriteArrayList<Host>(Collections.singletonList(host)));
             else
                 prev.addIfAbsent(host);
+        }
+
+        if (notInLocalDC.size() > 0) {
+            String nonLocalHosts = Joiner.on(",").join(notInLocalDC);
+            logger.warn("Some contact points don't match local data center. Local DC = {}. Non-conforming contact points: {}", localDc, nonLocalHosts);
         }
     }
 
@@ -350,7 +373,7 @@ public class DCAwareRoundRobinPolicy implements LoadBalancingPolicy {
             throw new AssertionError(e);
         } catch (TimeoutException e) {
             // Shouldn't really happen but isn't really a huge deal
-            logger.debug("Timeout while waiting only host initial reconnection future", e);
+            logger.debug("Timeout while waiting on initial reconnection future for " + h, e);
         }
     }
 
@@ -412,5 +435,10 @@ public class DCAwareRoundRobinPolicy implements LoadBalancingPolicy {
     @Override
     public void onRemove(Host host) {
         onDown(host);
+    }
+
+    @Override
+    public void close() {
+        // nothing to do
     }
 }

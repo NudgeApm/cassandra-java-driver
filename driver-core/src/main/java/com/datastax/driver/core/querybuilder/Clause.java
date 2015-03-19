@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -66,14 +66,16 @@ public abstract class Clause extends Utils.Appendeable {
 
     static class InClause extends AbstractClause {
 
-        private final List<Object> values;
+        private final List<?> values;
 
-        InClause(String name, List<Object> values) {
+        InClause(String name, List<?> values) {
             super(name);
             this.values = values;
 
             if (values == null)
                 throw new IllegalArgumentException("Missing values for IN clause");
+            if (values.size() > 65535)
+                throw new IllegalArgumentException("Too many values for IN clause, the maximum allowed is 65535");
         }
 
         @Override
@@ -112,9 +114,9 @@ public abstract class Clause extends Utils.Appendeable {
     static class CompoundClause extends Clause {
         private String op;
         private final List<String> names;
-        private final List<Object> values;
+        private final List<?> values;
 
-        CompoundClause(List<String> names, String op, List<Object> values) {
+        CompoundClause(List<String> names, String op, List<?> values) {
             assert names.size() == values.size();
             this.op = op;
             this.names = names;

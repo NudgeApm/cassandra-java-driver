@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -32,17 +32,17 @@ abstract class AbstractData<T extends SettableData<T>> extends AbstractGettableD
     // Ugly, we coould probably clean that: it is currently needed however because we sometimes
     // want wrapped to be 'this' (UDTValue), and sometimes some other object (in BoundStatement).
     @SuppressWarnings("unchecked")
-    protected AbstractData(int protocolVersion, int size) {
+    protected AbstractData(ProtocolVersion protocolVersion, int size) {
         super(protocolVersion);
         this.wrapped = (T)this;
         this.values = new ByteBuffer[size];
     }
 
-    protected AbstractData(int protocolVersion, T wrapped, int size) {
+    protected AbstractData(ProtocolVersion protocolVersion, T wrapped, int size) {
         this(protocolVersion, wrapped, new ByteBuffer[size]);
     }
 
-    protected AbstractData(int protocolVersion, T wrapped, ByteBuffer[] values) {
+    protected AbstractData(ProtocolVersion protocolVersion, T wrapped, ByteBuffer[] values) {
         super(protocolVersion);
         this.wrapped = wrapped;
         this.values = values;
@@ -271,6 +271,21 @@ abstract class AbstractData<T extends SettableData<T>> extends AbstractGettableD
         return wrapped;
     }
 
+    // setToken is package-private because we only want to expose it in BoundStatement
+    T setToken(int i, Token v) {
+        if (v == null)
+            throw new NullPointerException(String.format("Cannot set a null token for column %s", getName(i)));
+        checkType(i, v.getType().getName());
+        return setValue(i, v.getType().codec(protocolVersion).serialize(v.getValue()));
+    }
+
+    T setToken(String name, Token v) {
+        int[] indexes = getAllIndexesOf(name);
+        for (int i = 0; i < indexes.length; i++)
+            setToken(indexes[i], v);
+        return wrapped;
+    }
+
     public <E> T setList(int i, List<E> v) {
         DataType type = getType(i);
         if (type.getName() != DataType.Name.LIST)
@@ -362,7 +377,7 @@ abstract class AbstractData<T extends SettableData<T>> extends AbstractGettableD
             return setValue(i, null);
 
         // UDT always use the V3 protocol version to encode values
-        setValue(i, type.codec(3).serialize(v));
+        setValue(i, type.codec(ProtocolVersion.V3).serialize(v));
         return wrapped;
     }
 
@@ -382,7 +397,7 @@ abstract class AbstractData<T extends SettableData<T>> extends AbstractGettableD
             return setValue(i, null);
 
         // Tuples always user the V3 protocol version to encode values
-        setValue(i, type.codec(3).serialize(v));
+        setValue(i, type.codec(ProtocolVersion.V3).serialize(v));
         return wrapped;
     }
 
@@ -390,6 +405,19 @@ abstract class AbstractData<T extends SettableData<T>> extends AbstractGettableD
         int[] indexes = getAllIndexesOf(name);
         for (int i = 0; i < indexes.length; i++)
             setTupleValue(indexes[i], v);
+        return wrapped;
+    }
+
+    @Override
+    public T setToNull(int i) {
+        return setValue(i, null);
+    }
+
+    @Override
+    public T setToNull(String name) {
+        int[] indexes = getAllIndexesOf(name);
+        for (int i = 0; i < indexes.length; i++)
+            setToNull(indexes[i]);
         return wrapped;
     }
 

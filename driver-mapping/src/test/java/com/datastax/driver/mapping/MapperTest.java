@@ -1,3 +1,18 @@
+/*
+ *      Copyright (C) 2012-2014 DataStax Inc.
+ *
+ *   Licensed under the Apache License, Version 2.0 (the "License");
+ *   you may not use this file except in compliance with the License.
+ *   You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *   Unless required by applicable law or agreed to in writing, software
+ *   distributed under the License is distributed on an "AS IS" BASIS,
+ *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *   See the License for the specific language governing permissions and
+ *   limitations under the License.
+ */
 package com.datastax.driver.mapping;
 
 import java.net.InetAddress;
@@ -42,6 +57,9 @@ public class MapperTest extends CCMBridge.PerClassSingleNodeCluster {
            writeConsistency="QUORUM")
     public static class User {
 
+        // Dummy constant to test that static fields are properly ignored
+        public static final int FOO = 1;
+
         public enum Gender { FEMALE, MALE }
 
         @PartitionKey
@@ -50,6 +68,7 @@ public class MapperTest extends CCMBridge.PerClassSingleNodeCluster {
 
         private String name;
         private String email;
+        @Column // not strictly required, but we want to check that the annotation works without a name
         private int year;
 
         private Gender gender;
@@ -353,5 +372,9 @@ public class MapperTest extends CCMBridge.PerClassSingleNodeCluster {
         userAccessor.updateNameAndGender("Paule", User.Gender.FEMALE, u1.getUserId());
         Mapper<User> userMapper = manager.mapper(User.class);
         assertEquals(userMapper.get(u1.getUserId()).getGender(), User.Gender.FEMALE);
+
+        // Test that an enum value can be unassigned through an accessor (set to null).
+        userAccessor.updateNameAndGender("Paule", null, u1.getUserId());
+        assertEquals(userMapper.get(u1.getUserId()).getGender(), null);
     }
 }

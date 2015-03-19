@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -47,7 +47,7 @@ import com.datastax.driver.core.Statement;
  * data-center then you should use DCAwareRoundRobinPolicy and *not* this policy
  * in particular.
  */
-public class WhiteListPolicy implements LoadBalancingPolicy {
+public class WhiteListPolicy implements ChainableLoadBalancingPolicy, CloseableLoadBalancingPolicy {
     private final LoadBalancingPolicy childPolicy;
     private final Set<InetSocketAddress> whiteList;
 
@@ -62,6 +62,11 @@ public class WhiteListPolicy implements LoadBalancingPolicy {
     public WhiteListPolicy(LoadBalancingPolicy childPolicy, Collection<InetSocketAddress> whiteList) {
         this.childPolicy = childPolicy;
         this.whiteList = ImmutableSet.copyOf(whiteList);
+    }
+
+    @Override
+    public LoadBalancingPolicy getChildPolicy() {
+        return childPolicy;
     }
 
     /**
@@ -127,7 +132,7 @@ public class WhiteListPolicy implements LoadBalancingPolicy {
 
     @Override
     public void onSuspected(Host host) {
-        if (whiteList.contains(host.getAddress()))
+        if (whiteList.contains(host.getSocketAddress()))
             childPolicy.onSuspected(host);
     }
 
@@ -147,5 +152,11 @@ public class WhiteListPolicy implements LoadBalancingPolicy {
     public void onRemove(Host host) {
         if (whiteList.contains(host.getSocketAddress()))
             childPolicy.onRemove(host);
+    }
+
+    @Override
+    public void close() {
+        if (childPolicy instanceof CloseableLoadBalancingPolicy)
+            ((CloseableLoadBalancingPolicy)childPolicy).close();
     }
 }

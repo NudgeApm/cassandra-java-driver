@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@ import java.util.*;
 import com.google.common.base.Objects;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.reflect.TypeToken;
 import org.jboss.netty.buffer.ChannelBuffer;
 
 import com.datastax.driver.core.exceptions.DriverInternalError;
@@ -181,12 +182,30 @@ public abstract class DataType {
                 DataType keys = decode(buffer);
                 DataType values = decode(buffer);
                 return map(keys, values);
+            case UDT:
+                String keyspace = CBUtil.readString(buffer);
+                String type = CBUtil.readString(buffer);
+                int nFields = buffer.readShort() & 0xffff;
+                List<UserType.Field> fields = new ArrayList<UserType.Field>(nFields);
+                for (int i = 0; i < nFields; i++) {
+                    String fieldName = CBUtil.readString(buffer);
+                    DataType fieldType = decode(buffer);
+                    fields.add(new UserType.Field(fieldName, fieldType));
+                }
+                return new UserType(keyspace, type, fields);
+            case TUPLE:
+                nFields = buffer.readShort() & 0xffff;
+                List<DataType> types = new ArrayList<DataType>(nFields);
+                for (int i = 0; i < nFields; i++) {
+                    types.add(decode(buffer));
+                }
+                return new TupleType(types);
             default:
                 return primitiveTypeMap.get(name);
         }
     }
 
-    abstract TypeCodec<Object> codec(int protocolVersion);
+    abstract TypeCodec<Object> codec(ProtocolVersion protocolVersion);
 
     /**
      * Returns the ASCII type.
@@ -336,23 +355,70 @@ public abstract class DataType {
      * Returns the type of lists of {@code elementType} elements.
      *
      * @param elementType the type of the list elements.
+     * @param frozen whether the list is frozen.
      * @return the type of lists of {@code elementType} elements.
      */
+    public static DataType list(DataType elementType, boolean frozen) {
+        return new DataType.Collection(Name.LIST, ImmutableList.of(elementType), frozen);
+    }
+
+    /**
+     * Returns the type of lists of "not frozen" {@code elementType} elements.
+     * <p>
+     * This is a shorthand for {@code list(elementType, false);}.
+     *
+     * @param elementType the type of the list elements.
+     * @return the type of lists of "not frozen" {@code elementType} elements.
+     */
     public static DataType list(DataType elementType) {
-        // TODO: for list, sets and maps, we could cache them (may or may not be worth it, but since we
-        // don't allow nesting of collections, even pregenerating all the lists/sets like we do for
-        // primitives wouldn't be very costly)
-        return new DataType.Collection(Name.LIST, ImmutableList.of(elementType));
+        return list(elementType, false);
+    }
+
+    /**
+     * Returns the type of lists of frozen {@code elementType} elements.
+     * <p>
+     * This is a shorthand for {@code list(elementType, true);}.
+     *
+     * @param elementType the type of the list elements.
+     * @return the type of lists of frozen {@code elementType} elements.
+     */
+    public static DataType frozenList(DataType elementType) {
+        return list(elementType, true);
     }
 
     /**
      * Returns the type of sets of {@code elementType} elements.
      *
      * @param elementType the type of the set elements.
+     * @param frozen whether the set is frozen.
      * @return the type of sets of {@code elementType} elements.
      */
+    public static DataType set(DataType elementType, boolean frozen) {
+        return new DataType.Collection(Name.SET, ImmutableList.of(elementType), frozen);
+    }
+
+    /**
+     * Returns the type of "not frozen" sets of {@code elementType} elements.
+     * <p>
+     * This is a shorthand for {@code set(elementType, false);}.
+     *
+     * @param elementType the type of the set elements.
+     * @return the type of sets of "not frozen" {@code elementType} elements.
+     */
     public static DataType set(DataType elementType) {
-        return new DataType.Collection(Name.SET, ImmutableList.of(elementType));
+        return set(elementType, false);
+    }
+
+    /**
+     * Returns the type of frozen sets of {@code elementType} elements.
+     * <p>
+     * This is a shorthand for {@code set(elementType, true);}.
+     *
+     * @param elementType the type of the set elements.
+     * @return the type of frozen sets of {@code elementType} elements.
+     */
+    public static DataType frozenSet(DataType elementType) {
+        return set(elementType, true);
     }
 
     /**
@@ -360,10 +426,37 @@ public abstract class DataType {
      *
      * @param keyType the type of the map keys.
      * @param valueType the type of the map values.
-     * @return the type of map of {@code keyType} to {@code valueType} elements.
+     * @param frozen whether the map is frozen.
+     * @return the type of maps of {@code keyType} to {@code valueType} elements.
+     */
+    public static DataType map(DataType keyType, DataType valueType, boolean frozen) {
+        return new DataType.Collection(Name.MAP, ImmutableList.of(keyType, valueType), frozen);
+    }
+
+    /**
+     * Returns the type of "not frozen" maps of {@code keyType} to {@code valueType} elements.
+     * <p>
+     * This is a shorthand for {@code map(keyType, valueType, false);}.
+     *
+     * @param keyType the type of the map keys.
+     * @param valueType the type of the map values.
+     * @return the type of "not frozen" maps of {@code keyType} to {@code valueType} elements.
      */
     public static DataType map(DataType keyType, DataType valueType) {
-        return new DataType.Collection(Name.MAP, ImmutableList.of(keyType, valueType));
+        return map(keyType, valueType, false);
+    }
+
+    /**
+     * Returns the type of frozen maps of {@code keyType} to {@code valueType} elements.
+     * <p>
+     * This is a shorthand for {@code map(keyType, valueType, true);}.
+     *
+     * @param keyType the type of the map keys.
+     * @param valueType the type of the map values.
+     * @return the type of frozen maps of {@code keyType} to {@code valueType} elements.
+     */
+    public static DataType frozenMap(DataType keyType, DataType valueType) {
+        return map(keyType, valueType, true);
     }
 
     /**
@@ -396,6 +489,16 @@ public abstract class DataType {
     }
 
     /**
+     * Returns whether this data type is frozen.
+     * <p>
+     * This applies to User Defined Types, tuples and nested collections. Frozen types are serialized as a single value in
+     * Cassandra's storage engine, whereas non-frozen types are stored in a form that allows updates to individual subfields.
+     *
+     * @return whether this data type is frozen.
+     */
+    public abstract boolean isFrozen();
+
+    /**
      * Returns the type arguments of this type.
      * <p>
      * Note that only the collection types (LIST, MAP, SET) have type
@@ -415,6 +518,8 @@ public abstract class DataType {
     public List<DataType> getTypeArguments() {
         return Collections.<DataType>emptyList();
     }
+
+    abstract boolean canBeDeserializedAs(TypeToken typeToken);
 
     /**
      * Returns the server-side class name for a custom type.
@@ -440,7 +545,7 @@ public abstract class DataType {
      */
     public Object parse(String value) {
         // We don't care about the protocol version for parsing
-        return value == null ? null : codec(-1).parse(value);
+        return value == null ? null : codec(ProtocolVersion.NEWEST_SUPPORTED).parse(value);
     }
 
     /**
@@ -455,7 +560,7 @@ public abstract class DataType {
      */
     public String format(Object value) {
         // We don't care about the protocol version for formatting
-        return value == null ? null : codec(-1).format(value);
+        return value == null ? null : codec(ProtocolVersion.NEWEST_SUPPORTED).format(value);
     }
 
     /**
@@ -507,7 +612,7 @@ public abstract class DataType {
      * @throws InvalidTypeException if {@code value} is not a valid object
      * for this {@code DataType}.
      */
-    public ByteBuffer serialize(Object value, int protocolVersion) {
+    public ByteBuffer serialize(Object value, ProtocolVersion protocolVersion) {
         Class<?> providedClass = value.getClass();
         Class<?> expectedClass = asJavaClass();
         if (!expectedClass.isAssignableFrom(providedClass))
@@ -519,6 +624,28 @@ public abstract class DataType {
             // With collections, the element type has not been checked, so it can throw
             throw new InvalidTypeException("Invalid type for collection element: " + e.getMessage());
         }
+    }
+
+    /**
+     * Serialize a value of this type to bytes, with the given numeric protocol version.
+     *
+     * @throws IllegalArgumentException if {@code protocolVersion} does not correspond to any known version.
+     *
+     * @deprecated This method is provided for backward compatibility. Use
+     * {@link #serialize(Object, ProtocolVersion)} instead.
+     */
+    @Deprecated
+    public ByteBuffer serialize(Object value, int protocolVersion) {
+        return serialize(value, ProtocolVersion.fromInt(protocolVersion));
+    }
+
+    /**
+     * @deprecated This method is provided for binary compatibility only. It is no longer supported, will be removed,
+     * and simply throws {@link UnsupportedOperationException}. Use {@link #serialize(Object, ProtocolVersion)} instead.
+     */
+    @Deprecated
+    public ByteBuffer serialize(Object value) {
+        throw new UnsupportedOperationException("Method no longer supported; use serialize(Object,ProtocolVersion)");
     }
 
     /**
@@ -542,8 +669,29 @@ public abstract class DataType {
      * @throws InvalidTypeException if {@code bytes} is not a valid
      * encoding of an object of this {@code DataType}.
      */
-    public Object deserialize(ByteBuffer bytes, int protocolVersion) {
+    public Object deserialize(ByteBuffer bytes, ProtocolVersion protocolVersion) {
         return codec(protocolVersion).deserialize(bytes);
+    }
+
+    /**
+     * Deserialize a value of this type from the provided bytes using the given numeric protocol version.
+     *
+     * @throws IllegalArgumentException if {@code protocolVersion} does not correspond to any known version.
+     *
+     * @deprecated This method is provided for backward compatibility. Use
+     * {@link #deserialize(ByteBuffer,ProtocolVersion)} instead.
+     */
+    public Object deserialize(ByteBuffer bytes, int protocolVersion) {
+        return deserialize(bytes, ProtocolVersion.fromInt(protocolVersion));
+    }
+
+    /**
+     * @deprecated This method is provided for binary compatibility only. It is no longer supported, will be removed,
+     * and simply throws {@link UnsupportedOperationException}. Use {@link #deserialize(ByteBuffer, ProtocolVersion)} instead.
+     */
+    @Deprecated
+    public Object deserialize(ByteBuffer bytes) {
+        throw new UnsupportedOperationException("Method no longer supported; use deserialize(ByteBuffer,ProtocolVersion)");
     }
 
     /**
@@ -567,7 +715,7 @@ public abstract class DataType {
      * corresponding to a CQL3 type, i.e. is not a Class that could be returned
      * by {@link DataType#asJavaClass}.
      */
-    public static ByteBuffer serializeValue(Object value, int protocolVersion) {
+    public static ByteBuffer serializeValue(Object value, ProtocolVersion protocolVersion) {
         if (value == null)
             return null;
 
@@ -585,19 +733,53 @@ public abstract class DataType {
         }
     }
 
+    /**
+     * Serialize an object based on its java class, with the given numeric protocol version.
+     *
+     * @throws IllegalArgumentException if {@code protocolVersion} does not correspond to any known version.
+     *
+     * @deprecated This method is provided for backward compatibility. Use
+     * {@link #serializeValue(Object, ProtocolVersion)} instead.
+     */
+    @Deprecated
+    public static ByteBuffer serializeValue(Object value, int protocolVersion) {
+        return serializeValue(value, ProtocolVersion.fromInt(protocolVersion));
+    }
+
+    /**
+     * @deprecated This method is provided for binary compatibility only. It is no longer supported, will be removed,
+     * and simply throws {@link UnsupportedOperationException}. Use {@link #serializeValue(Object, ProtocolVersion)} instead.
+     */
+    @Deprecated
+    public static ByteBuffer serializeValue(Object value) {
+        throw new UnsupportedOperationException("Method no longer supported; use serializeValue(Object,ProtocolVersion)");
+    }
+
     private static class Native extends DataType {
         private Native(DataType.Name name) {
             super(name);
         }
 
         @Override
-        TypeCodec<Object> codec(int protocolVersion) {
+        public boolean isFrozen() {
+            return false;
+        }
+
+        @Override
+        boolean canBeDeserializedAs(TypeToken typeToken) {
+            return typeToken.isAssignableFrom(getName().javaType);
+        }
+
+        @Override
+        TypeCodec<Object> codec(ProtocolVersion protocolVersion) {
             return TypeCodec.createFor(name);
         }
 
         @Override
         public final int hashCode() {
-            return name.hashCode();
+            return (name == Name.TEXT)
+                ? Name.VARCHAR.hashCode()
+                : name.hashCode();
         }
 
         @Override
@@ -605,7 +787,10 @@ public abstract class DataType {
             if(!(o instanceof DataType.Native))
                 return false;
 
-            return name == ((DataType.Native)o).name;
+            Native that = (DataType.Native)o;
+            return name == that.name ||
+                   name == Name.VARCHAR && that.name == Name.TEXT ||
+                   name == Name.TEXT && that.name == Name.VARCHAR;
         }
 
         @Override
@@ -617,15 +802,40 @@ public abstract class DataType {
     private static class Collection extends DataType {
 
         private final List<DataType> typeArguments;
+        private boolean frozen;
 
-        private Collection(DataType.Name name, List<DataType> typeArguments) {
+        private Collection(DataType.Name name, List<DataType> typeArguments, boolean frozen) {
             super(name);
             this.typeArguments = typeArguments;
+            this.frozen = frozen;
+        }
+
+        @Override
+        public boolean isFrozen() {
+            return frozen;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        boolean canBeDeserializedAs(TypeToken typeToken) {
+            switch (name) {
+                case LIST:
+                    return typeToken.getRawType().isAssignableFrom(List.class) &&
+                        typeArguments.get(0).canBeDeserializedAs(typeToken.resolveType(typeToken.getRawType().getTypeParameters()[0]));
+                case SET:
+                    return typeToken.getRawType().isAssignableFrom(Set.class) &&
+                        typeArguments.get(0).canBeDeserializedAs(typeToken.resolveType(typeToken.getRawType().getTypeParameters()[0]));
+                case MAP:
+                    return typeToken.getRawType().isAssignableFrom(Map.class) &&
+                        typeArguments.get(0).canBeDeserializedAs(typeToken.resolveType(typeToken.getRawType().getTypeParameters()[0])) &&
+                        typeArguments.get(1).canBeDeserializedAs(typeToken.resolveType(typeToken.getRawType().getTypeParameters()[1]));
+            }
+            throw new AssertionError();
         }
 
         @SuppressWarnings("unchecked")
         @Override
-        TypeCodec<Object> codec(int protocolVersion) {
+        TypeCodec<Object> codec(ProtocolVersion protocolVersion) {
             switch (name)
             {
                 case LIST: return (TypeCodec)TypeCodec.listOf(typeArguments.get(0), protocolVersion);
@@ -656,10 +866,14 @@ public abstract class DataType {
 
         @Override
         public String toString() {
-            if (name == Name.MAP)
-                return String.format("%s<%s, %s>", name, typeArguments.get(0), typeArguments.get(1));
-            else
-                return String.format("%s<%s>", name, typeArguments.get(0));
+            if (name == Name.MAP) {
+                String template = frozen ? "frozen<%s<%s, %s>>" : "%s<%s, %s>";
+                return String.format(template, name, typeArguments.get(0), typeArguments.get(1));
+            }
+            else {
+                String template = frozen ? "frozen<%s<%s>>" : "%s<%s>";
+                return String.format(template, name, typeArguments.get(0));
+            }
         }
     }
 
@@ -672,9 +886,19 @@ public abstract class DataType {
             this.customClassName = className;
         }
 
+        @Override
+        public boolean isFrozen() {
+            return false;
+        }
+
+        @Override
+        boolean canBeDeserializedAs(TypeToken typeToken) {
+            return typeToken.getRawType().getName().equals(customClassName);
+        }
+
         @SuppressWarnings("unchecked")
         @Override
-        TypeCodec<Object> codec(int protocolVersion) {
+        TypeCodec<Object> codec(ProtocolVersion protocolVersion) {
             return (TypeCodec)TypeCodec.BytesCodec.instance;
         }
 

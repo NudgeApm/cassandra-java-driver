@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -148,7 +148,6 @@ public class SchemaTest extends CCMBridge.PerClassSingleNodeCluster {
         TableMetadata metadata = cluster.getMetadata().getKeyspace(TestUtils.SIMPLE_KEYSPACE).getTable("with_options");
 
         String withOpts = withOptions;
-
         VersionNumber version = cluster.getMetadata()
                                        .getHost(new InetSocketAddress(CCMBridge.IP_PREFIX + "1", 9042))
                                        .getCassandraVersion();

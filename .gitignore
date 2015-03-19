@@ -5,5 +5,11 @@ testing/
 .classpath
 .project
 doc
+docs
 notes
 .DS_Store
+
+/.idea
+*.iml
+
+/driver-core/dependency-reduced-pom.xml

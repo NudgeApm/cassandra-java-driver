@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -18,17 +18,22 @@ package com.datastax.driver.core.querybuilder;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.net.InetAddress;
-import java.util.Arrays;
-import java.util.TreeMap;
-import java.util.TreeSet;
+import java.util.*;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
 
-import com.datastax.driver.core.ConsistencyLevel;
-import com.datastax.driver.core.Statement;
-
-import static com.datastax.driver.core.querybuilder.QueryBuilder.*;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.testng.Assert.*;
+
+import com.datastax.driver.core.*;
+import com.datastax.driver.core.querybuilder.Delete.Where;
+import com.datastax.driver.core.utils.Bytes;
+import com.datastax.driver.core.utils.CassandraVersion;
+
+import static com.datastax.driver.core.DataType.cint;
+import static com.datastax.driver.core.querybuilder.QueryBuilder.*;
 
 public class QueryBuilderTest {
 
@@ -105,6 +110,14 @@ public class QueryBuilderTest {
         query = "SELECT * FROM words WHERE w='WA(!:gS)r(UfW';";
         select = select().all().from("words").where(eq("w", "WA(!:gS)r(UfW"));
         assertEquals(select.toString(), query);
+
+        Date date = new Date();
+        date.setTime(1234325);
+        query = "SELECT * FROM foo where d=1234325";
+        select = select().all().from("foo").where(eq("d", date));
+
+        query = "SELECT * FROM foo where b=0xCAFEBABE";
+        select = select().all().from("foo").where(eq("b", Bytes.fromHexString("0xCAFEBABE")));
 
         try {
             select = select().countAll().from("foo").orderBy(asc("a"), desc("b")).orderBy(asc("a"), desc("b"));
@@ -202,6 +215,12 @@ public class QueryBuilderTest {
         query = "INSERT INTO foo(k,x) VALUES (0,1) IF NOT EXISTS;";
         insert = insertInto("foo").value("k", 0).value("x", 1).ifNotExists();
         assertEquals(insert.toString(), query);
+
+        query = "INSERT INTO foo(k,x) VALUES (0,(1));";
+        insert = insertInto("foo").value("k", 0).value("x", TupleType.of(cint()).newValue(1));
+        assertEquals(insert.toString(), query);
+
+        // UDT: see QueryBuilderExecutionTest
     }
 
     @Test(groups = "unit")
@@ -316,6 +335,18 @@ public class QueryBuilderTest {
         } catch (IllegalArgumentException e) {
             assertEquals(e.getMessage(), "Invalid timestamp, must be positive");
         }
+
+        query = "DELETE FROM foo.bar WHERE k1='foo' IF EXISTS;";
+        delete = delete().from("foo", "bar").where(eq("k1", "foo")).ifExists();
+        assertEquals(delete.toString(), query);
+
+        query = "DELETE FROM foo.bar WHERE k1='foo' IF a=1 AND b=2;";
+        delete = delete().from("foo", "bar").where(eq("k1", "foo")).onlyIf(eq("a", 1)).and(eq("b", 2));
+        assertEquals(delete.toString(), query);
+
+        query = "DELETE FROM foo WHERE k=:key;";
+        delete = delete().from("foo").where(eq("k", bindMarker("key")));
+        assertEquals(delete.toString(), query);
     }
 
     @Test(groups = "unit")
@@ -537,7 +568,11 @@ public class QueryBuilderTest {
         assertEquals(insert.toString(), query);
 
         query = "INSERT INTO foo(a,b) VALUES ({'2''} space','3','4'},3.4) USING TTL 24 AND TIMESTAMP 42;";
-        insert = insertInto("foo").values(new String[]{ "a", "b"}, new Object[]{ new TreeSet<String>(){{ add("2'} space"); add("3"); add("4"); }}, 3.4 }).using(ttl(24)).and(timestamp(42));
+        insert = insertInto("foo").values(new String[]{ "a", "b" }, new Object[]{ new TreeSet<String>() {{
+            add("2'} space");
+            add("3");
+            add("4");
+        }}, 3.4 }).using(ttl(24)).and(timestamp(42));
         assertEquals(insert.toString(), query);
     }
 
@@ -672,5 +707,64 @@ public class QueryBuilderTest {
         query = "SELECT * FROM foo WHERE k=4 AND (c1,c2)<=('a',2);";
         select = select().all().from("foo").where(eq("k", 4)).and(lte(Arrays.asList("c1", "c2"), Arrays.<Object>asList("a", 2)));
         assertEquals(select.toString(), query);
+    }
+
+    @Test(groups = "unit", expectedExceptions = IllegalArgumentException.class)
+    public void should_fail_if_in_clause_has_too_many_values() {
+        List<Object> values = Collections.<Object>nCopies(65536, "a");
+        select().all().from("foo").where(in("bar", values.toArray()));
+    }
+
+    @Test(groups = "unit", expectedExceptions = IllegalArgumentException.class)
+    public void should_fail_if_built_statement_has_too_many_values() {
+        List<Object> values = Collections.<Object>nCopies(65535, "a");
+
+        // If the excessive count results from successive DSL calls, we don't check it on the fly so this statement works:
+        BuiltStatement statement = select().all().from("foo")
+            .where(eq("bar", "a"))
+            .and(in("baz", values.toArray()));
+
+        // But we still want to check it client-side, to fail fast instead of sending a bad query to Cassandra.
+        // getValues() is called on any RegularStatement before we send it (see SessionManager.makeRequestMessage).
+        statement.getValues(ProtocolVersion.V3);
+    }
+
+    @Test(groups = "unit")
+    public void should_handle_collections_of_tuples() {
+        String query;
+        Statement statement;
+
+        query = "UPDATE foo SET l=[(1, 2)] WHERE k=1;";
+        List<TupleValue> list = ImmutableList.of(TupleType.of(cint(), cint()).newValue(1, 2));
+        statement = update("foo").with(set("l", list)).where(eq("k", 1));
+        assertThat(statement.toString()).isEqualTo(query);
+    }
+
+    @Test(groups = "unit")
+    @CassandraVersion(major = 2.1, minor = 3)
+    public void should_handle_nested_collections() {
+        String query;
+        Statement statement;
+
+        query = "UPDATE foo SET l=[[1],[2]] WHERE k=1;";
+        ImmutableList<ImmutableList<Integer>> list = ImmutableList.of(ImmutableList.of(1), ImmutableList.of(2));
+        statement = update("foo").with(set("l", list)).where(eq("k", 1));
+        assertThat(statement.toString()).isEqualTo(query);
+
+        query = "UPDATE foo SET m={1:[[1],[2]],2:[[1],[2]]} WHERE k=1;";
+        statement = update("foo").with(set("m", ImmutableMap.of(1, list, 2, list))).where(eq("k", 1));
+        assertThat(statement.toString()).isEqualTo(query);
+
+        query = "UPDATE foo SET m=m+{1:[[1],[2]],2:[[1],[2]]} WHERE k=1;";
+        statement = update("foo").with(putAll("m", ImmutableMap.of(1, list, 2, list))).where(eq("k", 1));
+        assertThat(statement.toString()).isEqualTo(query);
+
+        query = "UPDATE foo SET l=[[1]]+l WHERE k=1;";
+        statement = update("foo").with(prepend("l", ImmutableList.of(1))).where(eq("k", 1));
+        assertThat(statement.toString()).isEqualTo(query);
+
+        query = "UPDATE foo SET l=[[1],[2]]+l WHERE k=1;";
+        statement = update("foo").with(prependAll("l", list)).where(eq("k", 1));
+        assertThat(statement.toString()).isEqualTo(query);
     }
 }

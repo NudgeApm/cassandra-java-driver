@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -15,6 +15,9 @@
  */
 package com.datastax.driver.core.policies;
 
+import com.datastax.driver.core.ServerSideTimestampGenerator;
+import com.datastax.driver.core.TimestampGenerator;
+
 /**
  * Policies configured for a {@link com.datastax.driver.core.Cluster} instance.
  */
@@ -28,15 +31,16 @@ public class Policies {
     private final ReconnectionPolicy reconnectionPolicy;
     private final RetryPolicy retryPolicy;
     private final AddressTranslater addressTranslater;
+    private final TimestampGenerator timestampGenerator;
 
     public Policies() {
-        this(defaultLoadBalancingPolicy(), defaultReconnectionPolicy(), defaultRetryPolicy(), defaultAddressTranslater());
+        this(defaultLoadBalancingPolicy(), defaultReconnectionPolicy(), defaultRetryPolicy(), defaultAddressTranslater(), defaultTimestampGenerator());
     }
 
     /**
      * Creates a new {@code Policies} object using the provided policies.
      * <p>
-     * This constructor use the default {@link IdentityTranslater}.
+     * This constructor use the default {@link IdentityTranslater} and {@link TimestampGenerator}.
      *
      * @param loadBalancingPolicy the load balancing policy to use.
      * @param reconnectionPolicy the reconnection policy to use.
@@ -45,7 +49,7 @@ public class Policies {
     public Policies(LoadBalancingPolicy loadBalancingPolicy,
                     ReconnectionPolicy reconnectionPolicy,
                     RetryPolicy retryPolicy) {
-        this(loadBalancingPolicy, reconnectionPolicy, retryPolicy, DEFAULT_ADDRESS_TRANSLATER);
+        this(loadBalancingPolicy, reconnectionPolicy, retryPolicy, DEFAULT_ADDRESS_TRANSLATER, defaultTimestampGenerator());
     }
 
     /**
@@ -60,10 +64,33 @@ public class Policies {
                     ReconnectionPolicy reconnectionPolicy,
                     RetryPolicy retryPolicy,
                     AddressTranslater addressTranslater) {
+        // NB: this constructor is provided for backward compatibility with 2.1.0
         this.loadBalancingPolicy = loadBalancingPolicy;
         this.reconnectionPolicy = reconnectionPolicy;
         this.retryPolicy = retryPolicy;
         this.addressTranslater = addressTranslater;
+        this.timestampGenerator = defaultTimestampGenerator();
+    }
+
+    /**
+     * Creates a new {@code Policies} object using the provided policies.
+     *
+     * @param loadBalancingPolicy the load balancing policy to use.
+     * @param reconnectionPolicy the reconnection policy to use.
+     * @param retryPolicy the retry policy to use.
+     * @param addressTranslater the address translater to use.
+     * @param timestampGenerator the timestamp generator to use.
+     */
+    public Policies(LoadBalancingPolicy loadBalancingPolicy,
+                    ReconnectionPolicy reconnectionPolicy,
+                    RetryPolicy retryPolicy,
+                    AddressTranslater addressTranslater,
+                    TimestampGenerator timestampGenerator) {
+        this.loadBalancingPolicy = loadBalancingPolicy;
+        this.reconnectionPolicy = reconnectionPolicy;
+        this.retryPolicy = retryPolicy;
+        this.addressTranslater = addressTranslater;
+        this.timestampGenerator = timestampGenerator;
     }
 
     /**
@@ -71,6 +98,10 @@ public class Policies {
      * <p>
      * The default load balancing policy is {@link DCAwareRoundRobinPolicy} with token
      * awareness (so {@code new TokenAwarePolicy(new DCAwareRoundRobinPolicy())}).
+     * <p>
+     * Note that this policy shuffles the replicas when token awareness is used, see
+     * {@link TokenAwarePolicy#TokenAwarePolicy(LoadBalancingPolicy,boolean)} for an
+     * explanation of the tradeoffs.
      *
      * @return the default load balancing policy.
      */
@@ -106,12 +137,23 @@ public class Policies {
     /**
      * The default address translater.
      * <p>
-     * The default address tanslater is {@link IdentityTranslater}.
+     * The default address translater is {@link IdentityTranslater}.
      *
      * @return the default address translater.
      */
     public static AddressTranslater defaultAddressTranslater() {
         return DEFAULT_ADDRESS_TRANSLATER;
+    }
+
+    /**
+     * The default timestamp generator.
+     * <p>
+     * This is an instance of {@link ServerSideTimestampGenerator}.
+     *
+     * @return the default timestamp generator.
+     */
+    public static TimestampGenerator defaultTimestampGenerator() {
+        return ServerSideTimestampGenerator.INSTANCE;
     }
 
     /**
@@ -155,5 +197,14 @@ public class Policies {
      */
     public AddressTranslater getAddressTranslater() {
         return addressTranslater;
+    }
+
+    /**
+     * The timestamp generator to use.
+     *
+     * @return the timestamp generator to use.
+     */
+    public TimestampGenerator getTimestampGenerator() {
+        return timestampGenerator;
     }
 }

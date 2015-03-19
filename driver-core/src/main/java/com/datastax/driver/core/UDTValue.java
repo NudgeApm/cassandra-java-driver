@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ public class UDTValue extends AbstractData<UDTValue> {
 
     UDTValue(UserType definition) {
         // All things in a UDT are encoded with the protocol v3
-        super(3, definition.size());
+        super(ProtocolVersion.V3, definition.size());
         this.definition = definition;
     }
 
@@ -80,7 +80,7 @@ public class UDTValue extends AbstractData<UDTValue> {
             sb.append(getName(i));
             sb.append(":");
             DataType dt = getType(i);
-            sb.append(values[i] == null ? "null" : dt.format(dt.deserialize(values[i], 3)));
+            sb.append(values[i] == null ? "null" : dt.format(dt.deserialize(values[i], ProtocolVersion.V3)));
         }
         sb.append("}");
         return sb.toString();

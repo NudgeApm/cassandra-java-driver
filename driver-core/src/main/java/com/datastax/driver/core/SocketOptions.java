@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -113,8 +113,7 @@ public class SocketOptions {
      *   <li>the timeout settings used on the Cassandra side ({@code *_request_timeout_in_ms}
      *   in {@code cassandra.yaml}) should be taken into account when picking a value for this
      *   read timeout. In particular, if this read timeout option is lower than Cassandra's
-     *   timeout, the driver will try another host before it has had the time to receive the
-     *   Cassandra timeout. This might be counter-productive.</li>
+     *   timeout, <b>the driver might assume that the host is not responsive and mark it down.</b></li>
      *   <li>the read timeout is only approximate and only control the timeout to one Cassandra
      *   host, not the full query (see {@link #getReadTimeoutMillis} for more details). If a
      *   high level of precision on the timeout to a request is required, you should use

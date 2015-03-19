@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -26,12 +26,14 @@ class UnsupportedProtocolVersionException extends Exception {
     private static final long serialVersionUID = 0;
 
     public final InetSocketAddress address;
-    public final int versionUnsupported;
+    public final ProtocolVersion unsupportedVersion;
+    public final ProtocolVersion serverVersion;
 
-    public UnsupportedProtocolVersionException(InetSocketAddress address, int versionUnsupported)
+    public UnsupportedProtocolVersionException(InetSocketAddress address, ProtocolVersion unsupportedVersion, ProtocolVersion serverVersion)
     {
-        super(String.format("[%s] Host %s does not support protocol version %d", address, address, versionUnsupported));
+        super(String.format("[%s] Host %s does not support protocol version %s but %s", address, address, unsupportedVersion, serverVersion));
         this.address = address;
-        this.versionUnsupported = versionUnsupported;
+        this.unsupportedVersion = unsupportedVersion;
+        this.serverVersion = serverVersion;
     }
 }

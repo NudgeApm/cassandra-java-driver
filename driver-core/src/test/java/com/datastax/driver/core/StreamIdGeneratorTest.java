@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -24,20 +24,20 @@ public class StreamIdGeneratorTest {
     @Test(groups = "unit")
     public void SimpleGenIdTest() throws Exception {
 
-        StreamIdGenerator generator = new StreamIdGenerator();
+        StreamIdGenerator generator = StreamIdGenerator.newInstance(ProtocolVersion.V2);
 
         assertEquals(generator.next(), 0);
-        assertEquals(generator.next(), 1);
+        assertEquals(generator.next(), 64);
         generator.release(0);
         assertEquals(generator.next(), 0);
-        assertEquals(generator.next(), 2);
-        assertEquals(generator.next(), 3);
-        generator.release(1);
+        assertEquals(generator.next(), 65);
         assertEquals(generator.next(), 1);
-        assertEquals(generator.next(), 4);
+        generator.release(64);
+        assertEquals(generator.next(), 64);
+        assertEquals(generator.next(), 2);
 
         for (int i = 5; i < 128; i++)
-            assertEquals(generator.next(), i);
+            generator.next();
 
         generator.release(100);
         assertEquals(generator.next(), 100);

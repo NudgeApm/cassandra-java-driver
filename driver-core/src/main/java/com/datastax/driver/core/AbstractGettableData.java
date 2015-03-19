@@ -1,5 +1,5 @@
 /*
- *      Copyright (C) 2012 DataStax Inc.
+ *      Copyright (C) 2012-2014 DataStax Inc.
  *
  *   Licensed under the Apache License, Version 2.0 (the "License");
  *   you may not use this file except in compliance with the License.
@@ -21,6 +21,8 @@ import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.util.*;
 
+import com.google.common.reflect.TypeToken;
+
 public abstract class AbstractGettableData extends AbstractGettableByIndexData implements GettableData {
 
     /**
@@ -33,8 +35,18 @@ public abstract class AbstractGettableData extends AbstractGettableByIndexData i
      *
      * @throws IllegalArgumentException if {@code protocolVersion} is not a valid protocol version.
      */
-    protected AbstractGettableData(int protocolVersion) {
+    protected AbstractGettableData(ProtocolVersion protocolVersion) {
         super(protocolVersion);
+    }
+
+    /**
+     * @throws IllegalArgumentException if {@code protocolVersion} does not correspond to any known version.
+     *
+     * @deprecated This constructor is provided for backward compatibility, use {@link #AbstractGettableData(ProtocolVersion)} instead.
+     */
+    @Deprecated
+    protected AbstractGettableData(int protocolVersion) {
+        this(ProtocolVersion.fromInt(protocolVersion));
     }
 
     /**
@@ -171,6 +183,14 @@ public abstract class AbstractGettableData extends AbstractGettableByIndexData i
      * {@inheritDoc}
      */
     @Override
+    public <T> List<T> getList(String name, TypeToken<T> elementsType) {
+        return getList(getIndexOf(name), elementsType);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
     public <T> Set<T> getSet(String name, Class<T> elementsClass) {
         return getSet(getIndexOf(name), elementsClass);
     }
@@ -179,8 +199,24 @@ public abstract class AbstractGettableData extends AbstractGettableByIndexData i
      * {@inheritDoc}
      */
     @Override
+    public <T> Set<T> getSet(String name, TypeToken<T> elementsType) {
+        return getSet(getIndexOf(name), elementsType);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
     public <K, V> Map<K, V> getMap(String name, Class<K> keysClass, Class<V> valuesClass) {
         return getMap(getIndexOf(name), keysClass, valuesClass);
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public <K, V> Map<K, V> getMap(String name, TypeToken<K> keysType, TypeToken<V> valuesType) {
+        return getMap(getIndexOf(name), keysType, valuesType);
     }
 
     /**
