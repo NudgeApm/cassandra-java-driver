@@ -65,6 +65,8 @@ public class Cluster implements Closeable {
     static final int NEW_NODE_DELAY_SECONDS = SystemProperties.getInt("com.datastax.driver.NEW_NODE_DELAY_SECONDS", 1);
     private static final int NON_BLOCKING_EXECUTOR_SIZE = SystemProperties.getInt("com.datastax.driver.NON_BLOCKING_EXECUTOR_SIZE",
                                                                                   Runtime.getRuntime().availableProcessors());
+    private static final int BLOCKING_EXECUTOR_SIZE = SystemProperties.getInt("com.datastax.driver.BLOCKING_EXECUTOR_SIZE",
+                                                                                  2); // Previously hard-coded value
 
     private static final ResourceBundle driverProperties = ResourceBundle.getBundle("com.datastax.driver.core.Driver");
 
@@ -1160,7 +1162,7 @@ public class Cluster implements Closeable {
 
         final ConvictionPolicy.Factory convictionPolicyFactory = new ConvictionPolicy.Simple.Factory();
 
-        final ScheduledExecutorService reconnectionExecutor = Executors.newScheduledThreadPool(2, threadFactory("Reconnection-%d"));
+        final ScheduledExecutorService reconnectionExecutor = Executors.newScheduledThreadPool(BLOCKING_EXECUTOR_SIZE, threadFactory("Reconnection-%d"));
         // scheduledTasksExecutor is used to process C* notifications. So having it mono-threaded ensures notifications are
         // applied in the order received.
         final ScheduledExecutorService scheduledTasksExecutor = Executors.newScheduledThreadPool(1, threadFactory("Scheduled Tasks-%d"));
@@ -1192,7 +1194,7 @@ public class Cluster implements Closeable {
             this.configuration.register(this);
 
             this.executor = makeExecutor(NON_BLOCKING_EXECUTOR_SIZE, "Cassandra Java Driver worker-%d");
-            this.blockingExecutor = makeExecutor(2, "Cassandra Java Driver blocking tasks worker-%d");
+            this.blockingExecutor = makeExecutor(BLOCKING_EXECUTOR_SIZE, "Cassandra Java Driver blocking tasks worker-%d");
 
             this.reaper = new ConnectionReaper();
 
