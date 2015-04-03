@@ -206,7 +206,7 @@ public class ReconnectionTest {
             ccm.start(1);
             ccm.waitForUp(1);
 
-            TimeUnit.SECONDS.sleep(Cluster.NEW_NODE_DELAY_SECONDS);
+            TimeUnit.SECONDS.sleep(cluster.getNewNodeDelaySeconds());
             assertThat(cluster).host(1).hasState(State.DOWN);
 
             // Trigger another one-time reconnection attempt (this will succeed). The

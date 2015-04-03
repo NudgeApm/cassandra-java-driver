@@ -50,7 +50,7 @@ public class PoolingOptionsTest {
             // Wait for the node to be up, because apparently on Jenkins it's still only ADDED when we reach this line
             // Waiting for NEW_NODE_DELAY_SECONDS+1 allows the driver to create a connection pool and mark the node up
             assertThat(cluster).host(2)
-                               .comesUpWithin(Cluster.NEW_NODE_DELAY_SECONDS+1, SECONDS)
+                               .comesUpWithin(cluster.getNewNodeDelaySeconds()+1, SECONDS)
                                .isAtDistance(HostDistance.LOCAL);
 
             // Bring host 3 up, its presence should be acknowledged but it should be ignored
@@ -64,7 +64,7 @@ public class PoolingOptionsTest {
                                .hasState(State.UP)
                                .isAtDistance(HostDistance.LOCAL);
             assertThat(cluster).host(3)
-                               .comesUpWithin(Cluster.NEW_NODE_DELAY_SECONDS+1, SECONDS)
+                               .comesUpWithin(cluster.getNewNodeDelaySeconds()+1, SECONDS)
                                .isAtDistance(HostDistance.IGNORED);
             assertThat(session).hasNoPoolFor(3);
 

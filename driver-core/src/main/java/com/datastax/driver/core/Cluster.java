@@ -62,11 +62,13 @@ public class Cluster implements Closeable {
     private static final Logger logger = LoggerFactory.getLogger(Cluster.class);
 
     @VisibleForTesting
-    static final int NEW_NODE_DELAY_SECONDS = SystemProperties.getInt("com.datastax.driver.NEW_NODE_DELAY_SECONDS", 1);
+//    static final int NEW_NODE_DELAY_SECONDS = SystemProperties.getInt("com.datastax.driver.NEW_NODE_DELAY_SECONDS", 1);
+	int getNewNodeDelaySeconds() {
+		return Math.max(getConfiguration().getPoolingOptions().getPoolTimeoutMillis() / 1000, 1);
+	}
+	
     private static final int NON_BLOCKING_EXECUTOR_SIZE = SystemProperties.getInt("com.datastax.driver.NON_BLOCKING_EXECUTOR_SIZE",
                                                                                   Runtime.getRuntime().availableProcessors());
-    private static final int BLOCKING_EXECUTOR_SIZE = SystemProperties.getInt("com.datastax.driver.BLOCKING_EXECUTOR_SIZE",
-                                                                                  2); // Previously hard-coded value
 
     private static final ResourceBundle driverProperties = ResourceBundle.getBundle("com.datastax.driver.core.Driver");
 
@@ -1162,7 +1164,7 @@ public class Cluster implements Closeable {
 
         final ConvictionPolicy.Factory convictionPolicyFactory = new ConvictionPolicy.Simple.Factory();
 
-        final ScheduledThreadPoolExecutor reconnectionExecutor = new ScheduledThreadPoolExecutor(BLOCKING_EXECUTOR_SIZE, threadFactory("Reconnection-%d"));
+        final ScheduledThreadPoolExecutor reconnectionExecutor;
 		
         // scheduledTasksExecutor is used to process C* notifications. So having it mono-threaded ensures notifications are
         // applied in the order received.
@@ -1201,7 +1203,9 @@ public class Cluster implements Closeable {
             this.configuration.register(this);
 
             this.executor = makeExecutor(NON_BLOCKING_EXECUTOR_SIZE, "Cassandra Java Driver worker-%d", executorQueue);
-            this.blockingExecutor = makeExecutor(BLOCKING_EXECUTOR_SIZE, "Cassandra Java Driver blocking tasks worker-%d", blockingExecutorQueue);
+			int blockingThreadCount = Math.max(contactPoints.size(), 2);
+            this.blockingExecutor = makeExecutor(blockingThreadCount, "Cassandra Java Driver blocking tasks worker-%d", blockingExecutorQueue);
+			this.reconnectionExecutor = new ScheduledThreadPoolExecutor(blockingThreadCount, threadFactory("Reconnection-%d"));
 
             this.reaper = new ConnectionReaper();
 
@@ -2104,7 +2108,7 @@ public class Cluster implements Closeable {
                                             logger.debug("Not enough info for {}, ignoring host", newHost);
                                         }
                                     }
-                                }, NEW_NODE_DELAY_SECONDS, TimeUnit.SECONDS);
+                                }, getNewNodeDelaySeconds(), TimeUnit.SECONDS);
                             }
                             break;
                         case REMOVED_NODE:
@@ -2146,7 +2150,7 @@ public class Cluster implements Closeable {
                                             logger.debug("Not enough info for {}, ignoring host", h);
                                         }
                                     }
-                                }, NEW_NODE_DELAY_SECONDS, TimeUnit.SECONDS);
+                                }, getNewNodeDelaySeconds(), TimeUnit.SECONDS);
                             } else {
                                 executor.submit(new ExceptionCatchingRunnable() {
                                     @Override
