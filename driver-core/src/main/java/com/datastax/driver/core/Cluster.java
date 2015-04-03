@@ -1549,6 +1549,12 @@ public class Cluster implements Closeable {
                 return;
             }
             try {
+            
+	            // If we've already marked the node down/suspected, ignore this
+                if (!host.setSuspected() || host.reconnectionAttempt.get() != null) {
+					logger.debug("Aborting onSuspect because a reconnection is running on UP host {}", host);
+                    return;
+				}
 				
 				// We shouldn't really get there for IGNORED nodes since we shouldn't have
 				// connected to one in the first place, but if we ever do, simply hand it
@@ -1557,20 +1563,40 @@ public class Cluster implements Closeable {
 					triggerOnDown(host, true);
 					return;
 				}
+				
+                loadBalancingPolicy().onSuspected(host);
+		        controlConnection.onSuspected(host);
+		        for (SessionManager s : sessions)
+		            s.onSuspected(host);
 
-				// If we've already marked the node down/suspected, ignore this
-				if (!host.setSuspected())
-						return;
-
-				// Note: we don't want to skip that method if !host.isUp() because we set isUp
-				// late in onUp, and so we can rely on isUp if there is an error during onUp.
-				// But if there is a reconnection attempt in progress already, then we know
-				// we've already gone through that method since the last successful onUp(), so
-				// we're good skipping it.
-				if (host.reconnectionAttempt.get() != null) {
-					logger.debug("Aborting onSuspect because a reconnection is running on UP host {}", host);
-					return;
-				}
+		        for (Host.StateListener listener : listeners)
+		            listener.onSuspected(host);
+				
+				// Start the initial initial reconnection attempt
+                host.initialReconnectionAttempt.set(executor.submit(new ExceptionCatchingRunnable() {
+                    @Override
+                    public void runMayThrow() throws InterruptedException, ExecutionException {
+                        boolean success;
+                        try {
+                            // TODO: as for the ReconnectionHandler, we could avoid "wasting" this connection
+                            connectionFactory.open(host).closeAsync();
+                            // Note that we want to do the pool creation on this thread because we want that
+                            // when onUp return, the host is ready for querying
+                            onUp(host, MoreExecutors.sameThreadExecutor());
+                            // If one of the connections in onUp failed, it signaled the error and triggerd onDown,
+                            // but onDown aborted because this reconnection attempt was in progress (JAVA-577).
+                            // Test the state now to check than onUp succeeded (we know it's up-to-date since onUp was
+                            // executed synchronously).
+                            success = host.state == Host.State.UP;
+                        } catch (Exception e) {
+                            success = false;
+                        }
+                        if (!success) {
+                            onDown(host, false, true, true);
+                            return;
+                        }
+                    }
+                }));
 
 				// Note: we basically waste the first successful reconnection, but it's probably not a big deal
 				logger.debug("{} is suspect, scheduling connection retries", host);
@@ -1578,6 +1604,7 @@ public class Cluster implements Closeable {
 			} finally {
                 host.notificationsLock.unlock();
             }
+            
         }
 
         // Use triggerOnDown unless you're sure you want to run this on the current thread.
