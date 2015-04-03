@@ -1508,7 +1508,7 @@ public class Cluster implements Closeable {
                 // Now, check if there isn't pools to create/remove following the addition.
                 // We do that now only so that it's not called before we've set the node up.
                 for (SessionManager s : sessions)
-                    s.updateCreatedPools(blockingExecutor);
+                    s.updateCreatedPools(poolCreationExecutor);
 
             } finally {
                 host.notificationsLock.unlock();

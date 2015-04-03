@@ -14,7 +14,7 @@ class SystemProperties {
     static int getInt(String key, int defaultValue) {
         String stringValue = System.getProperty(key);
         if (stringValue == null) {
-            logger.debug("{} is undefined, using default value {}", key, defaultValue);
+            logger.warn("{} is undefined, using default value {}", key, defaultValue);
             return defaultValue;
         }
         try {
